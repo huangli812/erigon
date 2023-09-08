@@ -23,8 +23,14 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon/eth/gasprice/gaspricecfg"
+	"github.com/ledgerwatch/erigon/turbo/jsonrpc"
+	"github.com/ledgerwatch/erigon/turbo/services"
+	"github.com/ledgerwatch/erigon/turbo/stages/mock"
+
 	"github.com/ledgerwatch/erigon/core"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
@@ -32,21 +38,23 @@ import (
 	"github.com/ledgerwatch/erigon/eth/gasprice"
 	"github.com/ledgerwatch/erigon/params"
 	"github.com/ledgerwatch/erigon/rpc"
-	"github.com/ledgerwatch/erigon/turbo/stages"
 )
 
 type testBackend struct {
-	db  kv.RwDB
-	cfg *params.ChainConfig
+	db          kv.RwDB
+	cfg         *chain.Config
+	blockReader services.FullBlockReader
 }
 
-func (b *testBackend) GetReceipts(ctx context.Context, hash common.Hash) (types.Receipts, error) {
+func (b *testBackend) GetReceipts(ctx context.Context, block *types.Block) (types.Receipts, error) {
 	tx, err := b.db.BeginRo(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	return rawdb.ReadReceiptsByHash(tx, hash)
+
+	receipts := rawdb.ReadReceipts(tx, block, nil)
+	return receipts, nil
 }
 
 func (b *testBackend) PendingBlockAndReceipts() (*types.Block, types.Receipts) {
@@ -65,7 +73,7 @@ func (b *testBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber
 	if number == rpc.LatestBlockNumber {
 		return rawdb.ReadCurrentHeader(tx), nil
 	}
-	return rawdb.ReadHeaderByNumber(tx, uint64(number)), nil
+	return b.blockReader.HeaderByNumber(ctx, tx, uint64(number))
 }
 
 func (b *testBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Block, error) {
@@ -74,13 +82,14 @@ func (b *testBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber)
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	if number == rpc.LatestBlockNumber {
-		return rawdb.ReadCurrentBlock(tx), nil
+		return b.blockReader.CurrentBlock(tx)
 	}
-	return rawdb.ReadBlockByNumber(tx, uint64(number))
+	return b.blockReader.BlockByNumber(ctx, tx, uint64(number))
 }
 
-func (b *testBackend) ChainConfig() *params.ChainConfig {
+func (b *testBackend) ChainConfig() *chain.Config {
 	return b.cfg
 }
 
@@ -88,31 +97,31 @@ func newTestBackend(t *testing.T) *testBackend {
 	var (
 		key, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 		addr   = crypto.PubkeyToAddress(key.PublicKey)
-		gspec  = &core.Genesis{
+		gspec  = &types.Genesis{
 			Config: params.TestChainConfig,
-			Alloc:  core.GenesisAlloc{addr: {Balance: big.NewInt(math.MaxInt64)}},
+			Alloc:  types.GenesisAlloc{addr: {Balance: big.NewInt(math.MaxInt64)}},
 		}
 		signer = types.LatestSigner(gspec.Config)
 	)
-	m := stages.MockWithGenesis(t, gspec, key)
+	m := mock.MockWithGenesis(t, gspec, key, false)
 
 	// Generate testing blocks
 	chain, err := core.GenerateChain(m.ChainConfig, m.Genesis, m.Engine, m.DB, 32, func(i int, b *core.BlockGen) {
-		b.SetCoinbase(common.Address{1})
-		tx, txErr := types.SignTx(types.NewTransaction(b.TxNonce(addr), common.HexToAddress("deadbeef"), uint256.NewInt(100), 21000, uint256.NewInt(uint64(int64(i+1)*params.GWei)), nil), *signer, key)
+		b.SetCoinbase(libcommon.Address{1})
+		tx, txErr := types.SignTx(types.NewTransaction(b.TxNonce(addr), libcommon.HexToAddress("deadbeef"), uint256.NewInt(100), 21000, uint256.NewInt(uint64(int64(i+1)*params.GWei)), nil), *signer, key)
 		if txErr != nil {
 			t.Fatalf("failed to create tx: %v", txErr)
 		}
 		b.AddTx(tx)
-	}, false)
+	})
 	if err != nil {
 		t.Error(err)
 	}
 	// Construct testing chain
-	if err = m.InsertChain(chain); err != nil {
+	if err = m.InsertChain(chain, nil); err != nil {
 		t.Error(err)
 	}
-	return &testBackend{db: m.DB, cfg: params.TestChainConfig}
+	return &testBackend{db: m.DB, cfg: params.TestChainConfig, blockReader: m.BlockReader}
 }
 
 func (b *testBackend) CurrentHeader() *types.Header {
@@ -130,21 +139,20 @@ func (b *testBackend) GetBlockByNumber(number uint64) *types.Block {
 		panic(err)
 	}
 	defer tx.Rollback()
-	r, err := rawdb.ReadBlockByNumber(tx, number)
-	if err != nil {
-		panic(err)
-	}
-	return r
+
+	block, _ := b.blockReader.BlockByNumber(context.Background(), tx, number)
+	return block
 }
 
 func TestSuggestPrice(t *testing.T) {
-	config := gasprice.Config{
+	config := gaspricecfg.Config{
 		Blocks:     2,
 		Percentile: 60,
 		Default:    big.NewInt(params.GWei),
 	}
 	backend := newTestBackend(t)
-	oracle := gasprice.NewOracle(backend, config)
+	cache := jsonrpc.NewGasPriceCache()
+	oracle := gasprice.NewOracle(backend, config, cache)
 
 	// The gas price sampled is: 32G, 31G, 30G, 29G, 28G, 27G
 	got, err := oracle.SuggestTipCap(context.Background())

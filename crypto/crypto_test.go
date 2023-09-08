@@ -20,12 +20,14 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"encoding/hex"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"testing"
 
+	"golang.org/x/crypto/sha3"
+
 	"github.com/holiman/uint256"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/hexutil"
@@ -34,6 +36,7 @@ import (
 
 var testAddrHex = "970e8128ab834e8eac17ab8e3812f010678cf791"
 var testPrivHex = "289c2857d4598e37fb9647507e47a309d6133539bf21a8b9cb6df88fd5232032"
+var testPubkeyHex = "7db227d7094ce215c3a0f57e1bcc732551fe351f94249471934567e0f5dc1bf795962b8cccb87a2eb56b29fbe37d614e2f4c3c45b789ae4f1f51f4cb21972ffd"
 
 // These tests are sanity checks.
 // They should ensure that we don't e.g. use Sha3-224 instead of Sha3-256
@@ -49,6 +52,33 @@ func TestKeccak256Hasher(t *testing.T) {
 	exp, _ := hex.DecodeString("4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45")
 	hasher := NewKeccakState()
 	checkhash(t, "Sha3-256-array", func(in []byte) []byte { h := HashData(hasher, in); return h[:] }, msg, exp)
+}
+
+func TestKeccak256HasherNew(t *testing.T) {
+	msg := []byte("abc")
+	exp, _ := hex.DecodeString("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")
+	hasher := sha3.New256()
+	hasher.Write(msg)
+	var h libcommon.Hash
+	if !bytes.Equal(exp, hasher.Sum(h[:0])) {
+		t.Fatalf("hash %s mismatch: want: %x have: %x", "new", exp, h[:])
+	}
+}
+
+func TestKeccak256HasherMulti(t *testing.T) {
+	exp1, _ := hex.DecodeString("d341f310fa772d37e6966b84b37ad760811d784729b641630f6a03f729e1e20e")
+	exp2, _ := hex.DecodeString("6de9c0166df098306abb98b112c0834c29eedee6fcba804c7c4f4568204c9d81")
+	hasher := NewKeccakState()
+	d1, _ := hex.DecodeString("1234")
+	hasher.Write(d1)
+	d2, _ := hex.DecodeString("cafe")
+	hasher.Write(d2)
+	d3, _ := hex.DecodeString("babe")
+	hasher.Write(d3)
+	checkhash(t, "multi1", func(in []byte) []byte { var h libcommon.Hash; return hasher.Sum(h[:0]) }, []byte{}, exp1)
+	d4, _ := hex.DecodeString("5678")
+	hasher.Write(d4)
+	checkhash(t, "multi2", func(in []byte) []byte { var h libcommon.Hash; return hasher.Sum(h[:0]) }, []byte{}, exp2)
 }
 
 func TestToECDSAErrors(t *testing.T) {
@@ -94,9 +124,29 @@ func TestUnmarshalPubkey(t *testing.T) {
 	}
 }
 
+func TestMarshalPubkey(t *testing.T) {
+	check := func(privateKeyHex, expectedPubkeyHex string) {
+		key, err := HexToECDSA(privateKeyHex)
+		if err != nil {
+			t.Errorf("bad private key: %s", err)
+			return
+		}
+		pubkeyHex := hex.EncodeToString(MarshalPubkey(&key.PublicKey))
+		if pubkeyHex != expectedPubkeyHex {
+			t.Errorf("unexpected public key: %s", pubkeyHex)
+		}
+	}
+
+	check(testPrivHex, testPubkeyHex)
+	check(
+		"36a7edad64d51a568b00e51d3fa8cd340aa704153010edf7f55ab3066ca4ef21",
+		"24bfa2cdce7c6a41184fa0809ad8d76969b7280952e9aa46179d90cfbab90f7d2b004928f0364389a1aa8d5166281f2ff7568493c1f719e8f6148ef8cf8af42d",
+	)
+}
+
 func TestSign(t *testing.T) {
 	key, _ := HexToECDSA(testPrivHex)
-	addr := common.HexToAddress(testAddrHex)
+	addr := libcommon.HexToAddress(testAddrHex)
 
 	msg := Keccak256([]byte("foo"))
 	sig, err := Sign(msg, key)
@@ -135,7 +185,7 @@ func TestInvalidSign(t *testing.T) {
 
 func TestNewContractAddress(t *testing.T) {
 	key, _ := HexToECDSA(testPrivHex)
-	addr := common.HexToAddress(testAddrHex)
+	addr := libcommon.HexToAddress(testAddrHex)
 	genAddr := PubkeyToAddress(key.PublicKey)
 	// sanity check before using addr to create contract address
 	checkAddr(t, genAddr, addr)
@@ -143,9 +193,9 @@ func TestNewContractAddress(t *testing.T) {
 	caddr0 := CreateAddress(addr, 0)
 	caddr1 := CreateAddress(addr, 1)
 	caddr2 := CreateAddress(addr, 2)
-	checkAddr(t, common.HexToAddress("333c3310824b7c685133f2bedb2ca4b8b4df633d"), caddr0)
-	checkAddr(t, common.HexToAddress("8bda78331c916a08481428e4b07c96d3e916d165"), caddr1)
-	checkAddr(t, common.HexToAddress("c9ddedf451bc62ce88bf9292afb13df35b670699"), caddr2)
+	checkAddr(t, libcommon.HexToAddress("333c3310824b7c685133f2bedb2ca4b8b4df633d"), caddr0)
+	checkAddr(t, libcommon.HexToAddress("8bda78331c916a08481428e4b07c96d3e916d165"), caddr1)
+	checkAddr(t, libcommon.HexToAddress("c9ddedf451bc62ce88bf9292afb13df35b670699"), caddr2)
 }
 
 func TestLoadECDSA(t *testing.T) {
@@ -184,7 +234,7 @@ func TestLoadECDSA(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		f, err := ioutil.TempFile("", "loadecdsa_test.*.txt")
+		f, err := os.CreateTemp("", "loadecdsa_test.*.txt")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,7 +255,7 @@ func TestLoadECDSA(t *testing.T) {
 }
 
 func TestSaveECDSA(t *testing.T) {
-	f, err := ioutil.TempFile("", "saveecdsa_test.*.txt")
+	f, err := os.CreateTemp("", "saveecdsa_test.*.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +329,7 @@ func checkhash(t *testing.T, name string, f func([]byte) []byte, msg, exp []byte
 	}
 }
 
-func checkAddr(t *testing.T, addr0, addr1 common.Address) {
+func checkAddr(t *testing.T, addr0, addr1 libcommon.Address) {
 	if addr0 != addr1 {
 		t.Fatalf("address mismatch: want: %x have: %x", addr0, addr1)
 	}

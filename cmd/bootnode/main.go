@@ -21,9 +21,11 @@ import (
 	"crypto/ecdsa"
 	"flag"
 	"fmt"
-	"github.com/ledgerwatch/erigon-lib/common"
 	"net"
 	"os"
+
+	"github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon/turbo/logging"
 
 	"github.com/ledgerwatch/erigon/cmd/utils"
 	"github.com/ledgerwatch/erigon/crypto"
@@ -31,7 +33,6 @@ import (
 	"github.com/ledgerwatch/erigon/p2p/enode"
 	"github.com/ledgerwatch/erigon/p2p/nat"
 	"github.com/ledgerwatch/erigon/p2p/netutil"
-	"github.com/ledgerwatch/log/v3"
 )
 
 func main() {
@@ -41,21 +42,16 @@ func main() {
 		writeAddr   = flag.Bool("writeaddress", false, "write out the node's public key and quit")
 		nodeKeyFile = flag.String("nodekey", "", "private key filename")
 		nodeKeyHex  = flag.String("nodekeyhex", "", "private key as hex (for testing)")
-		natdesc     = flag.String("nat", "none", "port mapping mechanism (any|none|upnp|pmp|extip:<IP>)")
+		natdesc     = flag.String(utils.NATFlag.Name, "", utils.NATFlag.Usage)
 		netrestrict = flag.String("netrestrict", "", "restrict network communication to the given IP networks (CIDR masks)")
 		runv5       = flag.Bool("v5", false, "run a v5 topic discovery bootnode")
-		verbosity   = flag.Int("verbosity", int(log.LvlInfo), "log verbosity (0-5)")
-		//vmodule     = flag.String("vmodule", "", "log verbosity pattern")
 
 		nodeKey *ecdsa.PrivateKey
 		err     error
 	)
 	flag.Parse()
 
-	//glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(false)))
-	//glogger.Verbosity(log.Lvl(*verbosity))
-	//glogger.Vmodule(*vmodule)
-	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*verbosity), log.StderrHandler))
+	logger := logging.SetupLogger("bootnode")
 
 	natm, err := nat.Parse(*natdesc)
 	if err != nil {
@@ -112,7 +108,7 @@ func main() {
 	realaddr := conn.LocalAddr().(*net.UDPAddr)
 	if natm != nil {
 		if !realaddr.IP.IsLoopback() && natm.SupportsMapping() {
-			go nat.Map(natm, nil, "udp", realaddr.Port, realaddr.Port, "ethereum discovery")
+			go nat.Map(natm, nil, "udp", realaddr.Port, realaddr.Port, "ethereum discovery", logger)
 		}
 		if ext, err := natm.ExternalIP(); err == nil {
 			realaddr = &net.UDPAddr{IP: ext, Port: realaddr.Port}
@@ -121,11 +117,11 @@ func main() {
 
 	printNotice(&nodeKey.PublicKey, *realaddr)
 
-	db, err := enode.OpenDB("")
+	db, err := enode.OpenDB("" /* path */, "" /* tmpDir */)
 	if err != nil {
 		panic(err)
 	}
-	ln := enode.NewLocalNode(db, nodeKey)
+	ln := enode.NewLocalNode(db, nodeKey, logger)
 	cfg := discover.Config{
 		PrivateKey:  nodeKey,
 		NetRestrict: restrictList,

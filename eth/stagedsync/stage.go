@@ -1,31 +1,26 @@
 package stagedsync
 
 import (
-	"context"
-	"encoding/binary"
-	"fmt"
-	"time"
-
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/log/v3"
+
+	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 )
 
 // ExecFunc is the execution function for the stage to move forward.
 // * state - is the current state of the stage and contains stage data.
 // * unwinder - if the stage needs to cause unwinding, `unwinder` methods can be used.
-type ExecFunc func(firstCycle bool, badBlockUnwind bool, s *StageState, unwinder Unwinder, tx kv.RwTx) error
+type ExecFunc func(firstCycle bool, badBlockUnwind bool, s *StageState, unwinder Unwinder, tx kv.RwTx, logger log.Logger) error
 
 // UnwindFunc is the unwinding logic of the stage.
 // * unwindState - contains information about the unwind itself.
 // * stageState - represents the state of this stage at the beginning of unwind.
-type UnwindFunc func(firstCycle bool, u *UnwindState, s *StageState, tx kv.RwTx) error
+type UnwindFunc func(firstCycle bool, u *UnwindState, s *StageState, tx kv.RwTx, logger log.Logger) error
 
 // PruneFunc is the execution function for the stage to prune old data.
 // * state - is the current state of the stage and contains stage data.
-type PruneFunc func(firstCycle bool, p *PruneState, tx kv.RwTx) error
+type PruneFunc func(firstCycle bool, p *PruneState, tx kv.RwTx, logger log.Logger) error
 
 // Stage is a single sync stage in staged sync.
 type Stage struct {
@@ -70,10 +65,17 @@ func (s *StageState) ExecutionAt(db kv.Getter) (uint64, error) {
 	return execution, err
 }
 
+// IntermediateHashesAt gets the current state of the "IntermediateHashes" stage.
+// A block is fully validated after the IntermediateHashes stage is passed successfully.
+func (s *StageState) IntermediateHashesAt(db kv.Getter) (uint64, error) {
+	progress, err := stages.GetStageProgress(db, stages.IntermediateHashes)
+	return progress, err
+}
+
 // Unwinder allows the stage to cause an unwind.
 type Unwinder interface {
 	// UnwindTo begins staged sync unwind to the specified block.
-	UnwindTo(unwindPoint uint64, badBlock common.Hash)
+	UnwindTo(unwindPoint uint64, badBlock libcommon.Hash)
 }
 
 // UnwindState contains the information about unwind.
@@ -83,7 +85,7 @@ type UnwindState struct {
 	UnwindPoint        uint64
 	CurrentBlockNumber uint64
 	// If unwind is caused by a bad block, this hash is not empty
-	BadBlock common.Hash
+	BadBlock libcommon.Hash
 	state    *Sync
 }
 
@@ -107,70 +109,4 @@ func (s *PruneState) Done(db kv.Putter) error {
 }
 func (s *PruneState) DoneAt(db kv.Putter, blockNum uint64) error {
 	return stages.SaveStagePruneProgress(db, s.ID, blockNum)
-}
-
-// PruneTable has `limit` parameter to avoid too large data deletes per one sync cycle - better delete by small portions to reduce db.FreeList size
-func PruneTable(tx kv.RwTx, table string, logPrefix string, pruneTo uint64, logEvery *time.Ticker, ctx context.Context, limit int) error {
-	c, err := tx.RwCursor(table)
-
-	if err != nil {
-		return fmt.Errorf("failed to create cursor for pruning %w", err)
-	}
-	defer c.Close()
-
-	i := 0
-	for k, _, err := c.First(); k != nil; k, _, err = c.Next() {
-		if err != nil {
-			return err
-		}
-		i++
-		if i > limit {
-			break
-		}
-
-		blockNum := binary.BigEndian.Uint64(k)
-		if blockNum >= pruneTo {
-			break
-		}
-		select {
-		case <-logEvery.C:
-			log.Info(fmt.Sprintf("[%s]", logPrefix), "table", table, "block", blockNum)
-		case <-ctx.Done():
-			return libcommon.ErrStopped
-		default:
-		}
-		if err = c.DeleteCurrent(); err != nil {
-			return fmt.Errorf("failed to remove for block %d: %w", blockNum, err)
-		}
-	}
-	return nil
-}
-
-func PruneTableDupSort(tx kv.RwTx, table string, logPrefix string, pruneTo uint64, logEvery *time.Ticker, ctx context.Context) error {
-	c, err := tx.RwCursorDupSort(table)
-	if err != nil {
-		return fmt.Errorf("failed to create cursor for pruning %w", err)
-	}
-	defer c.Close()
-
-	for k, _, err := c.First(); k != nil; k, _, err = c.NextNoDup() {
-		if err != nil {
-			return fmt.Errorf("failed to move %s cleanup cursor: %w", table, err)
-		}
-		blockNum := binary.BigEndian.Uint64(k)
-		if blockNum >= pruneTo {
-			break
-		}
-		select {
-		case <-logEvery.C:
-			log.Info(fmt.Sprintf("[%s]", logPrefix), "table", table, "block", blockNum)
-		case <-ctx.Done():
-			return libcommon.ErrStopped
-		default:
-		}
-		if err = c.DeleteCurrentDuplicates(); err != nil {
-			return fmt.Errorf("failed to remove for block %d: %w", blockNum, err)
-		}
-	}
-	return nil
 }

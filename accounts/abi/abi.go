@@ -24,7 +24,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/crypto"
 )
 
@@ -35,6 +36,7 @@ type ABI struct {
 	Constructor Method
 	Methods     map[string]Method
 	Events      map[string]Event
+	Errors      map[string]Error
 
 	// Additional "special" functions introduced in solidity v0.6.0.
 	// It's separated from the original default fallback. Each contract
@@ -158,6 +160,7 @@ func (abi *ABI) UnmarshalJSON(data []byte) error {
 	}
 	abi.Methods = make(map[string]Method)
 	abi.Events = make(map[string]Event)
+	abi.Errors = make(map[string]Error)
 	for _, field := range fields {
 		switch field.Type {
 		case "constructor":
@@ -185,6 +188,8 @@ func (abi *ABI) UnmarshalJSON(data []byte) error {
 		case "event":
 			name := abi.overloadedEventName(field.Name)
 			abi.Events[name] = NewEvent(name, field.Name, field.Anonymous, field.Inputs)
+		case "error":
+			abi.Errors[field.Name] = NewError(field.Name, field.Inputs)
 		default:
 			return fmt.Errorf("abi: could not recognize type %v of field %v", field.Type, field.Name)
 		}
@@ -238,7 +243,7 @@ func (abi *ABI) MethodById(sigdata []byte) (*Method, error) {
 
 // EventByID looks an event up by its topic hash in the
 // ABI and returns nil if none found.
-func (abi *ABI) EventByID(topic common.Hash) (*Event, error) {
+func (abi *ABI) EventByID(topic libcommon.Hash) (*Event, error) {
 	for _, event := range abi.Events {
 		if bytes.Equal(event.ID.Bytes(), topic.Bytes()) {
 			//nolint:scopelint

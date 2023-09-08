@@ -22,12 +22,13 @@ import (
 	"testing"
 
 	"github.com/holiman/uint256"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	"github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/erigon-lib/kv/kvcfg"
 	"github.com/ledgerwatch/erigon-lib/kv/memdb"
-	"github.com/ledgerwatch/erigon/params"
 	checker "gopkg.in/check.v1"
 
-	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/crypto"
 )
@@ -59,10 +60,10 @@ func (s *StateSuite) TestDump(c *checker.C) {
 	err = s.w.UpdateAccountData(obj2.address, &obj2.data, new(accounts.Account))
 	c.Check(err, checker.IsNil)
 
-	err = s.state.FinalizeTx(params.Rules{}, s.w)
+	err = s.state.FinalizeTx(&chain.Rules{}, s.w)
 	c.Check(err, checker.IsNil)
 
-	err = s.state.CommitBlock(params.Rules{}, s.w)
+	err = s.state.CommitBlock(&chain.Rules{}, s.w)
 	c.Check(err, checker.IsNil)
 
 	// check that dump contains the state objects that are in trie
@@ -71,7 +72,12 @@ func (s *StateSuite) TestDump(c *checker.C) {
 		c.Fatalf("create tx: %v", err1)
 	}
 	defer tx.Rollback()
-	got := string(NewDumper(tx, 1).DefaultDump())
+
+	historyV3, err := kvcfg.HistoryV3.Enabled(tx)
+	if err != nil {
+		panic(err)
+	}
+	got := string(NewDumper(tx, 1, historyV3).DefaultDump())
 	want := `{
     "root": "71edff0130dd2385947095001c73d9e28d862fc286fca2b922ca6f6f3cddfdd2",
     "accounts": {
@@ -102,14 +108,14 @@ func (s *StateSuite) TestDump(c *checker.C) {
 }
 
 func (s *StateSuite) SetUpTest(c *checker.C) {
-	s.kv = memdb.New()
+	s.kv = memdb.New("")
 	tx, err := s.kv.BeginRw(context.Background()) //nolint
 	if err != nil {
 		panic(err)
 	}
 	s.tx = tx
-	s.r = NewPlainState(tx, 1)
-	s.w = NewPlainState(tx, 1)
+	s.r = NewPlainState(tx, 1, nil)
+	s.w = NewPlainState(tx, 1, nil)
 	s.state = New(s.r)
 }
 
@@ -126,15 +132,42 @@ func (s *StateSuite) TestNull(c *checker.C) {
 
 	s.state.SetState(address, &common.Hash{}, value)
 
-	err := s.state.FinalizeTx(params.Rules{}, s.w)
+	err := s.state.FinalizeTx(&chain.Rules{}, s.w)
 	c.Check(err, checker.IsNil)
 
-	err = s.state.CommitBlock(params.Rules{}, s.w)
+	err = s.state.CommitBlock(&chain.Rules{}, s.w)
 	c.Check(err, checker.IsNil)
 
 	s.state.GetCommittedState(address, &common.Hash{}, &value)
 	if !value.IsZero() {
 		c.Errorf("expected empty hash. got %x", value)
+	}
+}
+
+func (s *StateSuite) TestTouchDelete(c *checker.C) {
+	s.state.GetOrNewStateObject(common.Address{})
+
+	err := s.state.FinalizeTx(&chain.Rules{}, s.w)
+	if err != nil {
+		c.Fatal("error while finalize", err)
+	}
+
+	err = s.state.CommitBlock(&chain.Rules{}, s.w)
+	if err != nil {
+		c.Fatal("error while commit", err)
+	}
+
+	s.state.Reset()
+
+	snapshot := s.state.Snapshot()
+	s.state.AddBalance(common.Address{}, new(uint256.Int))
+
+	if len(s.state.journal.dirties) != 1 {
+		c.Fatal("expected one dirty state object")
+	}
+	s.state.RevertToSnapshot(snapshot)
+	if len(s.state.journal.dirties) != 0 {
+		c.Fatal("expected no dirty state object")
 	}
 }
 
@@ -177,8 +210,8 @@ func (s *StateSuite) TestSnapshotEmpty(c *checker.C) {
 // printing/logging in tests (-check.vv does not work)
 func TestSnapshot2(t *testing.T) {
 	_, tx := memdb.NewTestTx(t)
-	w := NewPlainState(tx, 1)
-	state := New(NewPlainState(tx, 1))
+	w := NewPlainState(tx, 1, nil)
+	state := New(NewPlainState(tx, 1, nil))
 
 	stateobjaddr0 := toAddr([]byte("so0"))
 	stateobjaddr1 := toAddr([]byte("so1"))
@@ -195,17 +228,17 @@ func TestSnapshot2(t *testing.T) {
 	so0.SetBalance(uint256.NewInt(42))
 	so0.SetNonce(43)
 	so0.SetCode(crypto.Keccak256Hash([]byte{'c', 'a', 'f', 'e'}), []byte{'c', 'a', 'f', 'e'})
-	so0.suicided = false
+	so0.selfdestructed = false
 	so0.deleted = false
 	state.setStateObject(stateobjaddr0, so0)
 
-	err := state.FinalizeTx(params.Rules{}, w)
+	err := state.FinalizeTx(&chain.Rules{}, w)
 	if err != nil {
 		t.Fatal("error while finalizing transaction", err)
 	}
-	w = NewPlainState(tx, 2)
+	w = NewPlainState(tx, 2, nil)
 
-	err = state.CommitBlock(params.Rules{}, w)
+	err = state.CommitBlock(&chain.Rules{}, w)
 	if err != nil {
 		t.Fatal("error while committing state", err)
 	}
@@ -215,7 +248,7 @@ func TestSnapshot2(t *testing.T) {
 	so1.SetBalance(uint256.NewInt(52))
 	so1.SetNonce(53)
 	so1.SetCode(crypto.Keccak256Hash([]byte{'c', 'a', 'f', 'e', '2'}), []byte{'c', 'a', 'f', 'e', '2'})
-	so1.suicided = true
+	so1.selfdestructed = true
 	so1.deleted = true
 	state.setStateObject(stateobjaddr1, so1)
 
@@ -314,13 +347,13 @@ func TestDump(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = state.FinalizeTx(params.Rules{}, w)
+	err = state.FinalizeTx(&chain.Rules{}, w)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	blockWriter := NewPlainStateWriter(tx, tx, 1)
-	err = state.CommitBlock(params.Rules{}, blockWriter)
+	err = state.CommitBlock(&chain.Rules{}, blockWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +367,11 @@ func TestDump(t *testing.T) {
 	}
 
 	// check that dump contains the state objects that are in trie
-	got := string(NewDumper(tx, 2).DefaultDump())
+	historyV3, err := kvcfg.HistoryV3.Enabled(tx)
+	if err != nil {
+		panic(err)
+	}
+	got := string(NewDumper(tx, 2, historyV3).DefaultDump())
 	want := `{
     "root": "0000000000000000000000000000000000000000000000000000000000000000",
     "accounts": {

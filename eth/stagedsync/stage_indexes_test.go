@@ -13,19 +13,22 @@ import (
 	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
 	kv2 "github.com/ledgerwatch/erigon-lib/kv/memdb"
+	"github.com/ledgerwatch/erigon-lib/kv/temporal/historyv2"
+	"github.com/ledgerwatch/log/v3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/common/changeset"
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/crypto"
-	"github.com/ledgerwatch/erigon/ethdb/bitmapdb"
 	"github.com/ledgerwatch/erigon/ethdb/prune"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestIndexGenerator_GenerateIndex_SimpleCase(t *testing.T) {
+	logger := log.New()
 	db := kv2.NewTestDB(t)
 	cfg := StageHistoryCfg(db, prune.DefaultMode, t.TempDir())
 	test := func(blocksNum int, csBucket string) func(t *testing.T) {
@@ -34,7 +37,7 @@ func TestIndexGenerator_GenerateIndex_SimpleCase(t *testing.T) {
 			require.NoError(t, err)
 			defer tx.Rollback()
 
-			csInfo, ok := changeset.Mapper[csBucket]
+			csInfo, ok := historyv2.Mapper[csBucket]
 			if !ok {
 				t.Fatal("incorrect cs bucket")
 			}
@@ -42,9 +45,9 @@ func TestIndexGenerator_GenerateIndex_SimpleCase(t *testing.T) {
 			cfgCopy := cfg
 			cfgCopy.bufLimit = 10
 			cfgCopy.flushEvery = time.Microsecond
-			err = promoteHistory("logPrefix", tx, csBucket, 0, uint64(blocksNum/2), cfgCopy, nil)
+			err = promoteHistory("logPrefix", tx, csBucket, 0, uint64(blocksNum/2), cfgCopy, nil, logger)
 			require.NoError(t, err)
-			err = promoteHistory("logPrefix", tx, csBucket, uint64(blocksNum/2), uint64(blocksNum), cfgCopy, nil)
+			err = promoteHistory("logPrefix", tx, csBucket, uint64(blocksNum/2), uint64(blocksNum), cfgCopy, nil, logger)
 			require.NoError(t, err)
 
 			checkIndex(t, tx, csInfo.IndexBucket, addrs[0], expecedIndexes[string(addrs[0])])
@@ -60,6 +63,7 @@ func TestIndexGenerator_GenerateIndex_SimpleCase(t *testing.T) {
 }
 
 func TestIndexGenerator_Truncate(t *testing.T) {
+	logger := log.New()
 	buckets := []string{kv.AccountChangeSet, kv.StorageChangeSet}
 	tmpDir, ctx := t.TempDir(), context.Background()
 	kv := kv2.NewTestDB(t)
@@ -72,12 +76,12 @@ func TestIndexGenerator_Truncate(t *testing.T) {
 		defer tx.Rollback()
 
 		hashes, expected := generateTestData(t, tx, csbucket, 2100)
-		mp := changeset.Mapper[csbucket]
+		mp := historyv2.Mapper[csbucket]
 		indexBucket := mp.IndexBucket
 		cfgCopy := cfg
 		cfgCopy.bufLimit = 10
 		cfgCopy.flushEvery = time.Microsecond
-		err = promoteHistory("logPrefix", tx, csbucket, 0, uint64(2100), cfgCopy, nil)
+		err = promoteHistory("logPrefix", tx, csbucket, 0, uint64(2100), cfgCopy, nil, logger)
 		require.NoError(t, err)
 
 		reduceSlice := func(arr []uint64, timestamtTo uint64) []uint64 {
@@ -160,12 +164,12 @@ func TestIndexGenerator_Truncate(t *testing.T) {
 		checkIndex(t, tx, indexBucket, hashes[2], expected[string(hashes[2])])
 
 		//})
-		err = pruneHistoryIndex(tx, csbucket, "", tmpDir, 128, ctx)
+		err = pruneHistoryIndex(tx, csbucket, "", tmpDir, 128, ctx, logger)
 		assert.NoError(t, err)
 		expectNoHistoryBefore(t, tx, csbucket, 128)
 
 		// double prune is safe
-		err = pruneHistoryIndex(tx, csbucket, "", tmpDir, 128, ctx)
+		err = pruneHistoryIndex(tx, csbucket, "", tmpDir, 128, ctx, logger)
 		assert.NoError(t, err)
 		expectNoHistoryBefore(t, tx, csbucket, 128)
 		tx.Rollback()
@@ -178,7 +182,7 @@ func expectNoHistoryBefore(t *testing.T, tx kv.Tx, csbucket string, prunedTo uin
 		prefixLen = length.Hash
 	}
 	afterPrune := 0
-	err := tx.ForEach(changeset.Mapper[csbucket].IndexBucket, nil, func(k, _ []byte) error {
+	err := tx.ForEach(historyv2.Mapper[csbucket].IndexBucket, nil, func(k, _ []byte) error {
 		n := binary.BigEndian.Uint64(k[prefixLen:])
 		require.True(t, n >= prunedTo)
 		afterPrune++
@@ -189,7 +193,7 @@ func expectNoHistoryBefore(t *testing.T, tx kv.Tx, csbucket string, prunedTo uin
 }
 
 func generateTestData(t *testing.T, tx kv.RwTx, csBucket string, numOfBlocks int) ([][]byte, map[string][]uint64) { //nolint
-	csInfo, ok := changeset.Mapper[csBucket]
+	csInfo, ok := historyv2.Mapper[csBucket]
 	if !ok {
 		t.Fatal("incorrect cs bucket")
 	}

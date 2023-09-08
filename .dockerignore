@@ -6,6 +6,5 @@
 
 build
 tests/testdata
-tests/.git
 cmd/prometheus
-
+vendor

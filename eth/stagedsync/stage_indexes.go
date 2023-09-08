@@ -4,24 +4,29 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime"
-	"sort"
 	"time"
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/c2h5oh/datasize"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/dbg"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/etl"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
+	"github.com/ledgerwatch/erigon-lib/kv/temporal/historyv2"
+	"github.com/ledgerwatch/log/v3"
+	"golang.org/x/exp/slices"
+
 	"github.com/ledgerwatch/erigon/common/changeset"
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/ethdb"
-	"github.com/ledgerwatch/erigon/ethdb/bitmapdb"
 	"github.com/ledgerwatch/erigon/ethdb/prune"
-	"github.com/ledgerwatch/log/v3"
 )
 
 type HistoryCfg struct {
@@ -42,7 +47,7 @@ func StageHistoryCfg(db kv.RwDB, prune prune.Mode, tmpDir string) HistoryCfg {
 	}
 }
 
-func SpawnAccountHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context) error {
+func SpawnAccountHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context, logger log.Logger) error {
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		var err error
@@ -74,7 +79,7 @@ func SpawnAccountHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx con
 		startBlock = pruneTo
 	}
 
-	if err := promoteHistory(logPrefix, tx, kv.AccountChangeSet, startBlock, stopChangeSetsLookupAt, cfg, quitCh); err != nil {
+	if err := promoteHistory(logPrefix, tx, kv.AccountChangeSet, startBlock, stopChangeSetsLookupAt, cfg, quitCh, logger); err != nil {
 		return err
 	}
 
@@ -90,7 +95,7 @@ func SpawnAccountHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	return nil
 }
 
-func SpawnStorageHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context) error {
+func SpawnStorageHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context, logger log.Logger) error {
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		var err error
@@ -117,7 +122,7 @@ func SpawnStorageHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	}
 	stopChangeSetsLookupAt := executionAt + 1
 
-	if err := promoteHistory(logPrefix, tx, kv.StorageChangeSet, startChangeSetsLookupAt, stopChangeSetsLookupAt, cfg, quitCh); err != nil {
+	if err := promoteHistory(logPrefix, tx, kv.StorageChangeSet, startChangeSetsLookupAt, stopChangeSetsLookupAt, cfg, quitCh, logger); err != nil {
 		return err
 	}
 
@@ -132,7 +137,7 @@ func SpawnStorageHistoryIndex(s *StageState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	return nil
 }
 
-func promoteHistory(logPrefix string, tx kv.RwTx, changesetBucket string, start, stop uint64, cfg HistoryCfg, quit <-chan struct{}) error {
+func promoteHistory(logPrefix string, tx kv.RwTx, changesetBucket string, start, stop uint64, cfg HistoryCfg, quit <-chan struct{}, logger log.Logger) error {
 	logEvery := time.NewTicker(30 * time.Second)
 	defer logEvery.Stop()
 
@@ -140,7 +145,7 @@ func promoteHistory(logPrefix string, tx kv.RwTx, changesetBucket string, start,
 	checkFlushEvery := time.NewTicker(cfg.flushEvery)
 	defer checkFlushEvery.Stop()
 
-	collectorUpdates := etl.NewCollector(logPrefix, cfg.tmpdir, etl.NewSortableBuffer(etl.BufferOptimalSize))
+	collectorUpdates := etl.NewCollector(logPrefix, cfg.tmpdir, etl.NewSortableBuffer(etl.BufferOptimalSize), logger)
 	defer collectorUpdates.Close()
 
 	if err := changeset.ForRange(tx, changesetBucket, start, stop, func(blockN uint64, k, v []byte) error {
@@ -154,7 +159,7 @@ func promoteHistory(logPrefix string, tx kv.RwTx, changesetBucket string, start,
 		default:
 		case <-logEvery.C:
 			var m runtime.MemStats
-			runtime.ReadMemStats(&m)
+			dbg.ReadMemStats(&m)
 			log.Info(fmt.Sprintf("[%s] Progress", logPrefix), "number", blockN, "alloc", libcommon.ByteCount(m.Alloc), "sys", libcommon.ByteCount(m.Sys))
 		case <-checkFlushEvery.C:
 			if needFlush64(updates, cfg.bufLimit) {
@@ -219,7 +224,7 @@ func promoteHistory(logPrefix string, tx kv.RwTx, changesetBucket string, start,
 		return nil
 	}
 
-	if err := collectorUpdates.Load(tx, changeset.Mapper[changesetBucket].IndexBucket, loaderFunc, etl.TransformArgs{Quit: quit}); err != nil {
+	if err := collectorUpdates.Load(tx, historyv2.Mapper[changesetBucket].IndexBucket, loaderFunc, etl.TransformArgs{Quit: quit}); err != nil {
 		return err
 	}
 	return nil
@@ -287,11 +292,11 @@ func unwindHistory(logPrefix string, db kv.RwTx, csBucket string, to uint64, cfg
 	defer logEvery.Stop()
 
 	updates := map[string]struct{}{}
-	if err := changeset.ForEach(db, csBucket, dbutils.EncodeBlockNumber(to), func(blockN uint64, k, v []byte) error {
+	if err := historyv2.ForEach(db, csBucket, hexutility.EncodeTs(to), func(blockN uint64, k, v []byte) error {
 		select {
 		case <-logEvery.C:
 			var m runtime.MemStats
-			runtime.ReadMemStats(&m)
+			dbg.ReadMemStats(&m)
 			log.Info(fmt.Sprintf("[%s] Progress", logPrefix), "number", blockN, "alloc", libcommon.ByteCount(m.Alloc), "sys", libcommon.ByteCount(m.Sys))
 		case <-quitCh:
 			return libcommon.ErrStopped
@@ -304,7 +309,7 @@ func unwindHistory(logPrefix string, db kv.RwTx, csBucket string, to uint64, cfg
 		return err
 	}
 
-	if err := truncateBitmaps64(db, changeset.Mapper[csBucket].IndexBucket, updates, to); err != nil {
+	if err := truncateBitmaps64(db, historyv2.Mapper[csBucket].IndexBucket, updates, to); err != nil {
 		return err
 	}
 	return nil
@@ -341,7 +346,7 @@ func truncateBitmaps64(tx kv.RwTx, bucket string, inMem map[string]struct{}, to 
 	for k := range inMem {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	for _, k := range keys {
 		if err := bitmapdb.TruncateRange64(tx, bucket, []byte(k), to+1); err != nil {
 			return fmt.Errorf("fail TruncateRange: bucket=%s, %w", bucket, err)
@@ -351,7 +356,7 @@ func truncateBitmaps64(tx kv.RwTx, bucket string, inMem map[string]struct{}, to 
 	return nil
 }
 
-func PruneAccountHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context) (err error) {
+func PruneAccountHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context, logger log.Logger) (err error) {
 	if !cfg.prune.History.Enabled() {
 		return nil
 	}
@@ -367,7 +372,7 @@ func PruneAccountHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	}
 
 	pruneTo := cfg.prune.History.PruneTo(s.ForwardProgress)
-	if err = pruneHistoryIndex(tx, kv.AccountChangeSet, logPrefix, cfg.tmpdir, pruneTo, ctx); err != nil {
+	if err = pruneHistoryIndex(tx, kv.AccountChangeSet, logPrefix, cfg.tmpdir, pruneTo, ctx, logger); err != nil {
 		return err
 	}
 	if err = s.Done(tx); err != nil {
@@ -382,7 +387,7 @@ func PruneAccountHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	return nil
 }
 
-func PruneStorageHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context) (err error) {
+func PruneStorageHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx context.Context, logger log.Logger) (err error) {
 	if !cfg.prune.History.Enabled() {
 		return nil
 	}
@@ -397,7 +402,7 @@ func PruneStorageHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx con
 		defer tx.Rollback()
 	}
 	pruneTo := cfg.prune.History.PruneTo(s.ForwardProgress)
-	if err = pruneHistoryIndex(tx, kv.StorageChangeSet, logPrefix, cfg.tmpdir, pruneTo, ctx); err != nil {
+	if err = pruneHistoryIndex(tx, kv.StorageChangeSet, logPrefix, cfg.tmpdir, pruneTo, ctx, logger); err != nil {
 		return err
 	}
 	if err = s.Done(tx); err != nil {
@@ -412,11 +417,11 @@ func PruneStorageHistoryIndex(s *PruneState, tx kv.RwTx, cfg HistoryCfg, ctx con
 	return nil
 }
 
-func pruneHistoryIndex(tx kv.RwTx, csTable, logPrefix, tmpDir string, pruneTo uint64, ctx context.Context) error {
+func pruneHistoryIndex(tx kv.RwTx, csTable, logPrefix, tmpDir string, pruneTo uint64, ctx context.Context, logger log.Logger) error {
 	logEvery := time.NewTicker(logInterval)
 	defer logEvery.Stop()
 
-	collector := etl.NewCollector(logPrefix, tmpDir, etl.NewOldestEntryBuffer(etl.BufferOptimalSize))
+	collector := etl.NewCollector(logPrefix, tmpDir, etl.NewOldestEntryBuffer(etl.BufferOptimalSize), logger)
 	defer collector.Close()
 
 	if err := changeset.ForRange(tx, csTable, 0, pruneTo, func(blockNum uint64, k, _ []byte) error {
@@ -433,7 +438,7 @@ func pruneHistoryIndex(tx kv.RwTx, csTable, logPrefix, tmpDir string, pruneTo ui
 		return err
 	}
 
-	c, err := tx.RwCursor(changeset.Mapper[csTable].IndexBucket)
+	c, err := tx.RwCursor(historyv2.Mapper[csTable].IndexBucket)
 	if err != nil {
 		return fmt.Errorf("failed to create cursor for pruning %w", err)
 	}
@@ -445,7 +450,7 @@ func pruneHistoryIndex(tx kv.RwTx, csTable, logPrefix, tmpDir string, pruneTo ui
 	if err := collector.Load(tx, "", func(addr, _ []byte, table etl.CurrentTableReader, next etl.LoadNextFunc) error {
 		select {
 		case <-logEvery.C:
-			log.Info(fmt.Sprintf("[%s]", logPrefix), "table", changeset.Mapper[csTable].IndexBucket, "key", fmt.Sprintf("%x", addr))
+			log.Info(fmt.Sprintf("[%s]", logPrefix), "table", historyv2.Mapper[csTable].IndexBucket, "key", hex.EncodeToString(addr))
 		case <-ctx.Done():
 			return libcommon.ErrStopped
 		default:

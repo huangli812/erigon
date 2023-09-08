@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math/bits"
+	"sync/atomic"
 	"time"
 
+	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/hexutil"
+	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/ethdb"
 	"github.com/ledgerwatch/erigon/turbo/trie"
 	"github.com/ledgerwatch/log/v3"
@@ -23,8 +26,11 @@ func AssertSubset(prefix []byte, a, b uint16) {
 	}
 }
 
-func Trie(tx kv.Tx, slowChecks bool, ctx context.Context) {
+func Trie(db kv.RoDB, tx kv.Tx, slowChecks bool, ctx context.Context) {
 	quit := ctx.Done()
+	readAheadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	logEvery := time.NewTicker(10 * time.Second)
 	defer logEvery.Stop()
 	seek := make([]byte, 256)
@@ -36,17 +42,24 @@ func Trie(tx kv.Tx, slowChecks bool, ctx context.Context) {
 		if err != nil {
 			panic(err)
 		}
+		defer c.Close()
+		clear := kv.ReadAhead(readAheadCtx, db, &atomic.Bool{}, kv.TrieOfAccounts, nil, math.MaxInt32)
+		defer clear()
+
 		trieAcc2, err := tx.Cursor(kv.TrieOfAccounts)
 		if err != nil {
 			panic(err)
 		}
+		defer trieAcc2.Close()
+
 		accC, err := tx.Cursor(kv.HashedAccounts)
 		if err != nil {
 			panic(err)
 		}
-		defer c.Close()
-		defer trieAcc2.Close()
 		defer accC.Close()
+		clear2 := kv.ReadAhead(readAheadCtx, db, &atomic.Bool{}, kv.HashedAccounts, nil, math.MaxInt32)
+		defer clear2()
+
 		for k, v, errc := c.First(); k != nil; k, v, errc = c.Next() {
 			if errc != nil {
 				panic(errc)
@@ -56,14 +69,14 @@ func Trie(tx kv.Tx, slowChecks bool, ctx context.Context) {
 			case <-quit:
 				return
 			case <-logEvery.C:
-				log.Info("trie account integrity", "key", fmt.Sprintf("%x", k))
+				log.Info("trie account integrity", "key", hex.EncodeToString(k))
 			}
 
 			hasState, hasTree, hasHash, hashes, _ := trie.UnmarshalTrieNode(v)
 			AssertSubset(k, hasTree, hasState)
 			AssertSubset(k, hasHash, hasState)
-			if bits.OnesCount16(hasHash) != len(hashes)/common.HashLength {
-				panic(fmt.Errorf("invariant bits.OnesCount16(hasHash) == len(hashes) failed: %d, %d", bits.OnesCount16(hasHash), len(v[6:])/common.HashLength))
+			if bits.OnesCount16(hasHash) != len(hashes)/length.Hash {
+				panic(fmt.Errorf("invariant bits.OnesCount16(hasHash) == len(hashes) failed: %d, %d", bits.OnesCount16(hasHash), len(v[6:])/length.Hash))
 			}
 			found := false
 			var parentK []byte
@@ -145,17 +158,23 @@ func Trie(tx kv.Tx, slowChecks bool, ctx context.Context) {
 		if err != nil {
 			panic(err)
 		}
+		defer c.Close()
+		clear := kv.ReadAhead(readAheadCtx, db, &atomic.Bool{}, kv.TrieOfStorage, nil, math.MaxInt32)
+		defer clear()
+
 		trieStorage, err := tx.Cursor(kv.TrieOfStorage)
 		if err != nil {
 			panic(err)
 		}
+		defer trieStorage.Close()
+
 		storageC, err := tx.Cursor(kv.HashedStorage)
 		if err != nil {
 			panic(err)
 		}
-		defer c.Close()
-		defer trieStorage.Close()
 		defer storageC.Close()
+		clear2 := kv.ReadAhead(readAheadCtx, db, &atomic.Bool{}, kv.HashedStorage, nil, math.MaxInt32)
+		defer clear2()
 
 		for k, v, errc := c.First(); k != nil; k, v, errc = c.Next() {
 			if errc != nil {
@@ -166,14 +185,14 @@ func Trie(tx kv.Tx, slowChecks bool, ctx context.Context) {
 			case <-quit:
 				return
 			case <-logEvery.C:
-				log.Info("trie storage integrity", "key", fmt.Sprintf("%x", k))
+				log.Info("trie storage integrity", "key", hex.EncodeToString(k))
 			}
 
 			hasState, hasTree, hasHash, hashes, _ := trie.UnmarshalTrieNode(v)
 			AssertSubset(k, hasTree, hasState)
 			AssertSubset(k, hasHash, hasState)
-			if bits.OnesCount16(hasHash) != len(hashes)/common.HashLength {
-				panic(fmt.Errorf("invariant bits.OnesCount16(hasHash) == len(hashes) failed: %d, %d", bits.OnesCount16(hasHash), len(hashes)/common.HashLength))
+			if bits.OnesCount16(hasHash) != len(hashes)/length.Hash {
+				panic(fmt.Errorf("invariant bits.OnesCount16(hasHash) == len(hashes) failed: %d, %d", bits.OnesCount16(hasHash), len(hashes)/length.Hash))
 			}
 
 			found := false

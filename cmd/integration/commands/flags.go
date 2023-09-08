@@ -3,8 +3,9 @@ package commands
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/ledgerwatch/erigon/turbo/cli"
+
 	"github.com/ledgerwatch/erigon/cmd/utils"
-	"github.com/ledgerwatch/erigon/common/paths"
 	"github.com/ledgerwatch/erigon/eth/ethconfig"
 )
 
@@ -15,27 +16,40 @@ var (
 	block, pruneTo, unwind         uint64
 	unwindEvery                    uint64
 	batchSizeStr                   string
-	reset                          bool
+	reset, warmup, noCommit        bool
 	bucket                         string
-	datadir, toChaindata           string
+	datadirCli, toChaindata        string
 	migration                      string
 	integrityFast, integritySlow   bool
 	file                           string
+	HeimdallgRPCAddress            string
 	HeimdallURL                    string
-	txtrace                        bool // Whether to trace the execution (should only be used together eith `block`)
+	txtrace                        bool // Whether to trace the execution (should only be used together with `block`)
 	pruneFlag                      string
 	pruneH, pruneR, pruneT, pruneC uint64
 	pruneHBefore, pruneRBefore     uint64
 	pruneTBefore, pruneCBefore     uint64
 	experiments                    []string
-	chain                          string // Which chain to use (mainnet, ropsten, rinkeby, goerli, etc.)
-	syncmodeStr                    string
+	chain                          string // Which chain to use (mainnet, goerli, sepolia, etc.)
+
+	commitmentMode string
+	commitmentTrie string
+	commitmentFreq int
+	startTxNum     uint64
+	traceFromTx    uint64
+
+	_forceSetHistoryV3    bool
+	workers, reconWorkers uint64
 )
 
 func must(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func withConfig(cmd *cobra.Command) {
+	cmd.Flags().String("config", "", "yaml/toml config file location")
 }
 
 func withMining(cmd *cobra.Command) {
@@ -72,6 +86,9 @@ func withBlock(cmd *cobra.Command) {
 func withUnwind(cmd *cobra.Command) {
 	cmd.Flags().Uint64Var(&unwind, "unwind", 0, "how much blocks unwind on each iteration")
 }
+func withNoCommit(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&noCommit, "no-commit", false, "run everything in 1 transaction, but doesn't commit it")
+}
 
 func withPruneTo(cmd *cobra.Command) {
 	cmd.Flags().Uint64Var(&pruneTo, "prune.to", 0, "how much blocks unwind on each iteration")
@@ -83,6 +100,7 @@ func withUnwindEvery(cmd *cobra.Command) {
 
 func withReset(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&reset, "reset", false, "reset given stage")
+	cmd.Flags().BoolVar(&warmup, "warmup", false, "warmup relevant tables by parallel random reads")
 }
 
 func withBucket(cmd *cobra.Command) {
@@ -90,31 +108,31 @@ func withBucket(cmd *cobra.Command) {
 }
 
 func withDataDir2(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&datadir, utils.DataDirFlag.Name, paths.DefaultDataDir(), utils.DataDirFlag.Usage)
+	// --datadir is required, but no --chain flag: read chainConfig from db instead
+	cmd.Flags().StringVar(&datadirCli, utils.DataDirFlag.Name, "", utils.DataDirFlag.Usage)
 	must(cmd.MarkFlagDirname(utils.DataDirFlag.Name))
 	must(cmd.MarkFlagRequired(utils.DataDirFlag.Name))
 	cmd.Flags().IntVar(&databaseVerbosity, "database.verbosity", 2, "Enabling internal db logs. Very high verbosity levels may require recompile db. Default: 2, means warning.")
-	cmd.Flags().StringVar(&syncmodeStr, "syncmode", "", utils.SyncModeFlag.Usage)
 }
 
 func withDataDir(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&datadir, "datadir", paths.DefaultDataDir(), "data directory for temporary ELT files")
+	cmd.Flags().StringVar(&datadirCli, "datadir", "", "data directory for temporary ELT files")
+	must(cmd.MarkFlagRequired("datadir"))
 	must(cmd.MarkFlagDirname("datadir"))
 
 	cmd.Flags().StringVar(&chaindata, "chaindata", "", "path to the db")
 	must(cmd.MarkFlagDirname("chaindata"))
 
 	cmd.Flags().IntVar(&databaseVerbosity, "database.verbosity", 2, "Enabling internal db logs. Very high verbosity levels may require recompile db. Default: 2, means warning")
-	cmd.Flags().StringVar(&syncmodeStr, "syncmode", "", utils.SyncModeFlag.Usage)
 }
 
 func withBatchSize(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&batchSizeStr, "batchSize", "512M", "batch size for execution stage")
+	cmd.Flags().StringVar(&batchSizeStr, "batchSize", cli.BatchSizeFlag.Value, cli.BatchSizeFlag.Usage)
 }
 
 func withIntegrityChecks(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&integritySlow, "integrity.slow", false, "enable slow data-integrity checks")
-	cmd.Flags().BoolVar(&integrityFast, "integrity.fast", true, "enable fast data-integrity checks")
+	cmd.Flags().BoolVar(&integrityFast, "integrity.fast", false, "enable fast data-integrity checks")
 }
 
 func withMigration(cmd *cobra.Command) {
@@ -126,9 +144,29 @@ func withTxTrace(cmd *cobra.Command) {
 }
 
 func withChain(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&chain, "chain", "", "pick a chain to assume (mainnet, ropsten, etc.)")
+	cmd.Flags().StringVar(&chain, "chain", "mainnet", "pick a chain to assume (mainnet, sepolia, etc.)")
+	must(cmd.MarkFlagRequired("chain"))
 }
 
 func withHeimdall(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&HeimdallURL, "bor.heimdall", "http://localhost:1317", "URL of Heimdall service")
+}
+
+func withWorkers(cmd *cobra.Command) {
+	cmd.Flags().Uint64Var(&workers, "exec.workers", uint64(ethconfig.Defaults.Sync.ExecWorkerCount), "")
+	cmd.Flags().Uint64Var(&reconWorkers, "recon.workers", uint64(ethconfig.Defaults.Sync.ReconWorkerCount), "")
+}
+
+func withStartTx(cmd *cobra.Command) {
+	cmd.Flags().Uint64Var(&startTxNum, "tx", 0, "start processing from tx")
+}
+
+func withTraceFromTx(cmd *cobra.Command) {
+	cmd.Flags().Uint64Var(&traceFromTx, "txtrace.from", 0, "start tracing from tx number")
+}
+
+func withCommitment(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&commitmentMode, "commitment.mode", "direct", "defines the way to calculate commitments: 'direct' mode reads from state directly, 'update' accumulate updates before commitment, 'off' actually disables commitment calculation")
+	cmd.Flags().StringVar(&commitmentTrie, "commitment.trie", "hex", "hex - use Hex Patricia Hashed Trie for commitments, bin - use of binary patricia trie")
+	cmd.Flags().IntVar(&commitmentFreq, "commitment.freq", 1000000, "how many blocks to skip between calculating commitment")
 }

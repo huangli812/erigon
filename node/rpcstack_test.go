@@ -19,7 +19,7 @@ package node
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,8 +27,9 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
-	"github.com/ledgerwatch/erigon/internal/testlog"
 	"github.com/ledgerwatch/erigon/rpc"
+	"github.com/ledgerwatch/erigon/rpc/rpccfg"
+	"github.com/ledgerwatch/erigon/turbo/testlog"
 	"github.com/ledgerwatch/log/v3"
 
 	"github.com/stretchr/testify/assert"
@@ -49,7 +50,7 @@ func TestCorsHandler(t *testing.T) {
 	assert.Equal(t, "", resp2.Header.Get("Access-Control-Allow-Origin"))
 }
 
-// TestVhosts makes sure vhosts are properly handled on the http server.
+// TestVhosts makes sure vhosts is properly handled on the http server.
 func TestVhosts(t *testing.T) {
 	srv := createAndStartServer(t, &httpConfig{Vhosts: []string{"test"}}, false, &wsConfig{})
 	defer srv.stop()
@@ -62,6 +63,21 @@ func TestVhosts(t *testing.T) {
 	resp2 := rpcRequest(t, url, "host", "bad")
 	defer resp2.Body.Close()
 	assert.Equal(t, resp2.StatusCode, http.StatusForbidden)
+}
+
+// TestVhostsAny makes sure vhosts any is properly handled on the http server.
+func TestVhostsAny(t *testing.T) {
+	srv := createAndStartServer(t, &httpConfig{Vhosts: []string{"any"}}, false, &wsConfig{})
+	defer srv.stop()
+	url := "http://" + srv.listenAddr()
+
+	resp := rpcRequest(t, url, "host", "test")
+	defer resp.Body.Close()
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
+
+	resp2 := rpcRequest(t, url, "host", "bad")
+	defer resp2.Body.Close()
+	assert.Equal(t, resp.StatusCode, http.StatusOK)
 }
 
 type originTest struct {
@@ -238,7 +254,7 @@ func Test_checkPath(t *testing.T) {
 func createAndStartServer(t *testing.T, conf *httpConfig, ws bool, wsConf *wsConfig) *httpServer {
 	t.Helper()
 
-	srv := newHTTPServer(testlog.Logger(t, log.LvlError), rpc.DefaultHTTPTimeouts)
+	srv := newHTTPServer(testlog.Logger(t, log.LvlError), rpccfg.DefaultHTTPTimeouts)
 	assert.NoError(t, srv.enableRPC(nil, *conf, nil))
 	if ws {
 		assert.NoError(t, srv.enableWS(nil, *wsConf, nil))
@@ -251,7 +267,7 @@ func createAndStartServer(t *testing.T, conf *httpConfig, ws bool, wsConf *wsCon
 func createAndStartServerWithAllowList(t *testing.T, conf httpConfig, ws bool, wsConf wsConfig) *httpServer {
 	t.Helper()
 
-	srv := newHTTPServer(testlog.Logger(t, log.LvlError), rpc.DefaultHTTPTimeouts)
+	srv := newHTTPServer(testlog.Logger(t, log.LvlError), rpccfg.DefaultHTTPTimeouts)
 
 	allowList := rpc.AllowList(map[string]struct{}{"net_version": {}}) //don't allow RPC modules
 
@@ -299,7 +315,7 @@ func testCustomRequest(t *testing.T, srv *httpServer, method string) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	assert.NoError(t, err)
 
 	return !strings.Contains(string(respBody), "error")
@@ -323,7 +339,7 @@ func rpcRequest(t *testing.T, url string, extraHeaders ...string) *http.Response
 	}
 	for i := 0; i < len(extraHeaders); i += 2 {
 		key, value := extraHeaders[i], extraHeaders[i+1]
-		if strings.ToLower(key) == "host" {
+		if strings.EqualFold(key, "host") {
 			req.Host = value
 		} else {
 			req.Header.Set(key, value)

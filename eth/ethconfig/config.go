@@ -18,7 +18,6 @@
 package ethconfig
 
 import (
-	"io"
 	"math/big"
 	"os"
 	"os/user"
@@ -27,54 +26,57 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anacrolix/torrent"
 	"github.com/c2h5oh/datasize"
-	"github.com/davecgh/go-spew/spew"
-	"github.com/ledgerwatch/erigon-lib/common/dir"
-	"github.com/ledgerwatch/erigon/consensus/bor"
-	"github.com/ledgerwatch/erigon/params/networkname"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	"github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/datadir"
+	"github.com/ledgerwatch/erigon-lib/downloader/downloadercfg"
+	"github.com/ledgerwatch/erigon-lib/txpool/txpoolcfg"
 
-	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/consensus"
-	"github.com/ledgerwatch/erigon/consensus/aura"
-	"github.com/ledgerwatch/erigon/consensus/aura/consensusconfig"
-	"github.com/ledgerwatch/erigon/consensus/clique"
-	"github.com/ledgerwatch/erigon/consensus/db"
-	"github.com/ledgerwatch/erigon/consensus/ethash"
-	"github.com/ledgerwatch/erigon/consensus/parlia"
-	"github.com/ledgerwatch/erigon/consensus/serenity"
-	"github.com/ledgerwatch/erigon/core"
-	"github.com/ledgerwatch/erigon/eth/gasprice"
+	"github.com/ledgerwatch/erigon/consensus/ethash/ethashcfg"
+	"github.com/ledgerwatch/erigon/core/types"
+	"github.com/ledgerwatch/erigon/eth/ethconfig/estimate"
+	"github.com/ledgerwatch/erigon/eth/gasprice/gaspricecfg"
 	"github.com/ledgerwatch/erigon/ethdb/prune"
 	"github.com/ledgerwatch/erigon/params"
-	"github.com/ledgerwatch/log/v3"
+	"github.com/ledgerwatch/erigon/params/networkname"
 )
 
+// AggregationStep number of transactions in smallest static file
+const HistoryV3AggregationStep = 3_125_000 // 100M / 32
+//const HistoryV3AggregationStep = 3_125_000 / 100 // use this to reduce step size for dev/debug
+
 // FullNodeGPO contains default gasprice oracle settings for full node.
-var FullNodeGPO = gasprice.Config{
+var FullNodeGPO = gaspricecfg.Config{
 	Blocks:           20,
 	Default:          big.NewInt(0),
 	Percentile:       60,
 	MaxHeaderHistory: 0,
 	MaxBlockHistory:  0,
-	MaxPrice:         gasprice.DefaultMaxPrice,
-	IgnorePrice:      gasprice.DefaultIgnorePrice,
+	MaxPrice:         gaspricecfg.DefaultMaxPrice,
+	IgnorePrice:      gaspricecfg.DefaultIgnorePrice,
 }
 
 // LightClientGPO contains default gasprice oracle settings for light client.
-var LightClientGPO = gasprice.Config{
+var LightClientGPO = gaspricecfg.Config{
 	Blocks:           2,
 	Percentile:       60,
 	MaxHeaderHistory: 300,
 	MaxBlockHistory:  5,
-	MaxPrice:         gasprice.DefaultMaxPrice,
-	IgnorePrice:      gasprice.DefaultIgnorePrice,
+	MaxPrice:         gaspricecfg.DefaultMaxPrice,
+	IgnorePrice:      gaspricecfg.DefaultIgnorePrice,
 }
 
 // Defaults contains default settings for use on the Ethereum main net.
 var Defaults = Config{
-	SyncMode: FastSync,
-	Ethash: ethash.Config{
+	Sync: Sync{
+		UseSnapshots:               false,
+		ExecWorkerCount:            estimate.ReconstituteState.WorkersHalf(), //only half of CPU, other half will spend for snapshots build/merge/prune
+		ReconWorkerCount:           estimate.ReconstituteState.Workers(),
+		BodyCacheLimit:             256 * 1024 * 1024,
+		BodyDownloadTimeoutSeconds: 30,
+	},
+	Ethash: ethashcfg.Config{
 		CachesInMem:      2,
 		CachesLockMmap:   false,
 		DatasetsInMem:    1,
@@ -88,14 +90,17 @@ var Defaults = Config{
 		GasPrice: big.NewInt(params.GWei),
 		Recommit: 3 * time.Second,
 	},
-	TxPool:      core.DefaultTxPoolConfig,
-	RPCGasCap:   50000000,
-	GPO:         FullNodeGPO,
-	RPCTxFeeCap: 1, // 1 ether
-
-	BodyDownloadTimeoutSeconds: 30,
+	DeprecatedTxPool: DeprecatedDefaultTxPoolConfig,
+	RPCGasCap:        50000000,
+	GPO:              FullNodeGPO,
+	RPCTxFeeCap:      1, // 1 ether
 
 	ImportMode: false,
+	Snapshot: BlocksFreezing{
+		Enabled:    false,
+		KeepBlocks: false,
+		Produce:    true,
+	},
 }
 
 func init() {
@@ -122,41 +127,47 @@ func init() {
 	}
 }
 
-//go:generate gencodec -type Config -formats toml -out gen_config.go
+//go:generate gencodec -dir . -type Config -formats toml -out gen_config.go
 
-type Snapshot struct {
-	Enabled    bool
-	KeepBlocks bool
+type BlocksFreezing struct {
+	Enabled        bool
+	KeepBlocks     bool // produce new snapshots of blocks but don't remove blocks from DB
+	Produce        bool // produce new snapshots
+	NoDownloader   bool // possible to use snapshots without calling Downloader
+	Verify         bool // verify snapshots on startup
+	DownloaderAddr string
 }
 
-func (s Snapshot) String() string {
+func (s BlocksFreezing) String() string {
 	var out []string
 	if s.Enabled {
-		out = append(out, "--syncmode=snap")
+		out = append(out, "--snapshots=true")
 	}
 	if s.KeepBlocks {
-		out = append(out, "--"+FlagSnapshotKeepBlocks+"=true")
+		out = append(out, "--"+FlagSnapKeepBlocks+"=true")
+	}
+	if !s.Produce {
+		out = append(out, "--"+FlagSnapStop+"=true")
 	}
 	return strings.Join(out, " ")
 }
 
 var (
-	FlagSnapshot           = "snapshot"
-	FlagSnapshotKeepBlocks = "snap.keepblocks"
+	FlagSnapKeepBlocks = "snap.keepblocks"
+	FlagSnapStop       = "snap.stop"
 )
 
-func NewSnapshotCfg(enabled, keepBlocks bool) Snapshot {
-	return Snapshot{Enabled: enabled, KeepBlocks: keepBlocks}
+func NewSnapCfg(enabled, keepBlocks, produce bool) BlocksFreezing {
+	return BlocksFreezing{Enabled: enabled, KeepBlocks: keepBlocks, Produce: produce}
 }
 
 // Config contains configuration options for ETH protocol.
 type Config struct {
-	SyncModeCli string
-	SyncMode    SyncMode
+	Sync Sync
 
 	// The genesis block, which is inserted if the database is empty.
 	// If nil, the Ethereum main net block is used.
-	Genesis *core.Genesis `toml:",omitempty"`
+	Genesis *types.Genesis `toml:",omitempty"`
 
 	// Protocol options
 	NetworkID uint64 // Network ID to use for selecting peers to connect to
@@ -174,13 +185,10 @@ type Config struct {
 
 	BadBlockHash common.Hash // hash of the block marked as bad
 
-	Snapshot Snapshot
-	Torrent  *torrent.ClientConfig
+	Snapshot   BlocksFreezing
+	Downloader *downloadercfg.Cfg
 
-	TorrentDirCloser io.Closer
-	SnapshotDir      *dir.Rw
-
-	BlockDownloaderWindow int
+	Dirs datadir.Dirs
 
 	// Address to connect to external snapshot downloader
 	// empty if you want to use internal bittorrent snapshot downloader
@@ -193,18 +201,18 @@ type Config struct {
 	Miner params.MiningConfig
 
 	// Ethash options
-	Ethash ethash.Config
+	Ethash ethashcfg.Config
 
 	Clique params.ConsensusSnapshotConfig
-	Aura   params.AuRaConfig
-	Parlia params.ParliaConfig
-	Bor    params.BorConfig
+	Aura   chain.AuRaConfig
+	Bor    chain.BorConfig
 
 	// Transaction pool options
-	TxPool core.TxPoolConfig
+	DeprecatedTxPool DeprecatedTxPoolConfig
+	TxPool           txpoolcfg.Config
 
 	// Gas Price Oracle options
-	GPO gasprice.Config
+	GPO gaspricecfg.Config
 
 	// RPCGasCap is the global gas cap for eth-call variants.
 	RPCGasCap uint64 `toml:",omitempty"`
@@ -213,98 +221,57 @@ type Config struct {
 	// send-transction variants. The unit is ether.
 	RPCTxFeeCap float64 `toml:",omitempty"`
 
-	StateStream                bool
-	BodyDownloadTimeoutSeconds int // TODO change to duration
+	StateStream bool
 
-	// SyncLoopThrottle sets a minimum time between staged loop iterations
-	SyncLoopThrottle time.Duration
+	//  New DB and Snapshots format of history allows: parallel blocks execution, get state as of given transaction without executing whole block.",
+	HistoryV3 bool
 
-	// Enable WatchTheBurn stage
-	EnabledIssuance bool
+	// gRPC Address to connect to Heimdall node
+	HeimdallgRPCAddress string
 
 	// URL to connect to Heimdall node
 	HeimdallURL string
 
 	// No heimdall service
 	WithoutHeimdall bool
+	// Ethstats service
+	Ethstats string
+	// Consensus layer
+	InternalCL                  bool
+	LightClientDiscoveryAddr    string
+	LightClientDiscoveryPort    uint64
+	LightClientDiscoveryTCPPort uint64
+	SentinelAddr                string
+	SentinelPort                uint64
+
+	OverrideCancunTime *big.Int `toml:",omitempty"`
+
+	ForcePartialCommit bool
 }
 
-func CreateConsensusEngine(chainConfig *params.ChainConfig, logger log.Logger, config interface{}, notify []string, noverify bool, HeimdallURL string, WithoutHeimdall bool, datadir string) consensus.Engine {
-	var eng consensus.Engine
+type Sync struct {
+	UseSnapshots bool
+	// LoopThrottle sets a minimum time between staged loop iterations
+	LoopThrottle     time.Duration
+	ExecWorkerCount  int
+	ReconWorkerCount int
 
-	switch consensusCfg := config.(type) {
-	case *ethash.Config:
-		switch consensusCfg.PowMode {
-		case ethash.ModeFake:
-			log.Warn("Ethash used in fake mode")
-			eng = ethash.NewFaker()
-		case ethash.ModeTest:
-			log.Warn("Ethash used in test mode")
-			eng = ethash.NewTester(nil, noverify)
-		case ethash.ModeShared:
-			log.Warn("Ethash used in shared mode")
-			eng = ethash.NewShared()
-		default:
-			eng = ethash.New(ethash.Config{
-				CachesInMem:      consensusCfg.CachesInMem,
-				CachesLockMmap:   consensusCfg.CachesLockMmap,
-				DatasetDir:       consensusCfg.DatasetDir,
-				DatasetsInMem:    consensusCfg.DatasetsInMem,
-				DatasetsOnDisk:   consensusCfg.DatasetsOnDisk,
-				DatasetsLockMmap: consensusCfg.DatasetsLockMmap,
-			}, notify, noverify)
-		}
-	case *params.ConsensusSnapshotConfig:
-		if chainConfig.Clique != nil {
-			eng = clique.New(chainConfig, consensusCfg, db.OpenDatabase(consensusCfg.DBPath, logger, consensusCfg.InMemory))
-		}
-	case *params.AuRaConfig:
-		if chainConfig.Aura != nil {
-			var err error
-			eng, err = aura.NewAuRa(chainConfig.Aura, db.OpenDatabase(consensusCfg.DBPath, logger, consensusCfg.InMemory), chainConfig.Aura.Etherbase, consensusconfig.GetConfigByChain(chainConfig.ChainName))
-			if err != nil {
-				panic(err)
-			}
-		}
-	case *params.ParliaConfig:
-		if chainConfig.Parlia != nil {
-			eng = parlia.New(chainConfig, db.OpenDatabase(consensusCfg.DBPath, logger, consensusCfg.InMemory))
-		}
-	case *params.BorConfig:
-		if chainConfig.Bor != nil {
-			borDbPath := filepath.Join(datadir, "bor") // bor consensus path: datadir/bor
-			eng = bor.New(chainConfig, db.OpenDatabase(borDbPath, logger, false), HeimdallURL, WithoutHeimdall)
-		}
-	}
-
-	if eng == nil {
-		panic("unknown config" + spew.Sdump(config))
-	}
-
-	if chainConfig.TerminalTotalDifficulty == nil {
-		return eng
-	} else {
-		return serenity.New(eng) // the Merge
-	}
+	BodyCacheLimit             datasize.ByteSize
+	BodyDownloadTimeoutSeconds int // TODO: change to duration
 }
 
-type SyncMode string
+// Chains where snapshots are enabled by default
+var ChainsWithSnapshots = map[string]struct{}{
+	networkname.MainnetChainName:    {},
+	networkname.SepoliaChainName:    {},
+	networkname.GoerliChainName:     {},
+	networkname.MumbaiChainName:     {},
+	networkname.BorMainnetChainName: {},
+	networkname.GnosisChainName:     {},
+	networkname.ChiadoChainName:     {},
+}
 
-const (
-	FastSync SyncMode = "fast"
-	SnapSync SyncMode = "snap"
-)
-
-func SyncModeByChainName(chain, syncCliFlag string) SyncMode {
-	if syncCliFlag == "fast" {
-		return FastSync
-	} else if syncCliFlag == "snap" {
-		return SnapSync
-	}
-	switch chain {
-	case networkname.MainnetChainName, networkname.BSCChainName, networkname.GoerliChainName:
-		return SnapSync
-	default:
-		return FastSync
-	}
+func UseSnapshotsByChainName(chain string) bool {
+	_, ok := ChainsWithSnapshots[chain]
+	return ok
 }

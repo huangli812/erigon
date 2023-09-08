@@ -9,59 +9,67 @@ import (
 	"sync"
 	"time"
 
-	"github.com/holiman/uint256"
+	"github.com/ledgerwatch/erigon-lib/chain"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/cmp"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/etl"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon/turbo/services"
+	"github.com/ledgerwatch/log/v3"
+	"github.com/ledgerwatch/secp256k1"
+
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/common/debug"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/erigon/ethdb/prune"
-	"github.com/ledgerwatch/erigon/params"
-	"github.com/ledgerwatch/erigon/turbo/snapshotsync"
-	"github.com/ledgerwatch/erigon/turbo/snapshotsync/snapshothashes"
-	"github.com/ledgerwatch/log/v3"
-	"github.com/ledgerwatch/secp256k1"
+	"github.com/ledgerwatch/erigon/turbo/stages/headerdownload"
 )
 
 type SendersCfg struct {
-	db                kv.RwDB
-	batchSize         int
-	blockSize         int
-	bufferSize        int
-	numOfGoroutines   int
-	readChLen         int
-	tmpdir            string
-	prune             prune.Mode
-	chainConfig       *params.ChainConfig
-	blockRetire       *snapshotsync.BlockRetire
-	snapshotHashesCfg *snapshothashes.Config
+	db              kv.RwDB
+	batchSize       int
+	blockSize       int
+	bufferSize      int
+	numOfGoroutines int
+	readChLen       int
+	badBlockHalt    bool
+	tmpdir          string
+	prune           prune.Mode
+	chainConfig     *chain.Config
+	hd              *headerdownload.HeaderDownload
+	blockReader     services.FullBlockReader
 }
 
-func StageSendersCfg(db kv.RwDB, chainCfg *params.ChainConfig, tmpdir string, prune prune.Mode, br *snapshotsync.BlockRetire) SendersCfg {
+func StageSendersCfg(db kv.RwDB, chainCfg *chain.Config, badBlockHalt bool, tmpdir string, prune prune.Mode, blockReader services.FullBlockReader, hd *headerdownload.HeaderDownload) SendersCfg {
 	const sendersBatchSize = 10000
 	const sendersBlockSize = 4096
 
 	return SendersCfg{
-		db:                db,
-		batchSize:         sendersBatchSize,
-		blockSize:         sendersBlockSize,
-		bufferSize:        (sendersBlockSize * 10 / 20) * 10000, // 20*4096
-		numOfGoroutines:   secp256k1.NumOfContexts(),            // we can only be as parallels as our crypto library supports,
-		readChLen:         4,
-		tmpdir:            tmpdir,
-		chainConfig:       chainCfg,
-		prune:             prune,
-		blockRetire:       br,
-		snapshotHashesCfg: snapshothashes.KnownConfig(chainCfg.ChainName),
+		db:              db,
+		batchSize:       sendersBatchSize,
+		blockSize:       sendersBlockSize,
+		bufferSize:      (sendersBlockSize * 10 / 20) * 10000, // 20*4096
+		numOfGoroutines: secp256k1.NumOfContexts(),            // we can only be as parallels as our crypto library supports,
+		readChLen:       4,
+		badBlockHalt:    badBlockHalt,
+		tmpdir:          tmpdir,
+		chainConfig:     chainCfg,
+		prune:           prune,
+		hd:              hd,
+
+		blockReader: blockReader,
 	}
 }
 
-func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context) error {
+func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.RwTx, toBlock uint64, ctx context.Context, logger log.Logger) error {
+	if cfg.blockReader.FreezingCfg().Enabled && s.BlockNumber < cfg.blockReader.FrozenBlocks() {
+		s.BlockNumber = cfg.blockReader.FrozenBlocks()
+	}
+
 	quitCh := ctx.Done()
 	useExternalTx := tx != nil
 	if !useExternalTx {
@@ -80,55 +88,20 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 
 	var to = prevStageProgress
 	if toBlock > 0 {
-		to = min(prevStageProgress, toBlock)
+		to = cmp.Min(prevStageProgress, toBlock)
 	}
-	if to <= s.BlockNumber {
+	if to < s.BlockNumber {
 		return nil
 	}
 	logPrefix := s.LogPrefix()
 	if to > s.BlockNumber+16 {
-		log.Info(fmt.Sprintf("[%s] Started", logPrefix), "from", s.BlockNumber, "to", to)
+		logger.Info(fmt.Sprintf("[%s] Started", logPrefix), "from", s.BlockNumber, "to", to)
 	}
 
 	logEvery := time.NewTicker(30 * time.Second)
 	defer logEvery.Stop()
 
-	canonical := make([]common.Hash, to-s.BlockNumber)
-	currentHeaderIdx := uint64(0)
-
-	canonicalC, err := tx.Cursor(kv.HeaderCanonical)
-	if err != nil {
-		return err
-	}
-	defer canonicalC.Close()
-
 	startFrom := s.BlockNumber + 1
-	if cfg.blockRetire != nil && cfg.blockRetire.Snapshots() != nil && startFrom < cfg.blockRetire.Snapshots().BlocksAvailable() {
-		startFrom = cfg.blockRetire.Snapshots().BlocksAvailable()
-	}
-
-	for k, v, err := canonicalC.Seek(dbutils.EncodeBlockNumber(startFrom)); k != nil; k, v, err = canonicalC.Next() {
-		if err != nil {
-			return err
-		}
-		if err := libcommon.Stopped(quitCh); err != nil {
-			return err
-		}
-
-		if currentHeaderIdx >= to-s.BlockNumber { // if header stage is ehead of body stage
-			break
-		}
-
-		copy(canonical[currentHeaderIdx][:], v)
-		currentHeaderIdx++
-
-		select {
-		default:
-		case <-logEvery.C:
-			log.Info(fmt.Sprintf("[%s] Preload headers", logPrefix), "block_number", binary.BigEndian.Uint64(k))
-		}
-	}
-	log.Trace(fmt.Sprintf("[%s] Read canonical hashes", logPrefix), "amount", len(canonical))
 
 	jobs := make(chan *senderRecoveryJob, cfg.batchSize)
 	out := make(chan *senderRecoveryJob, cfg.batchSize)
@@ -145,7 +118,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 		}(i)
 	}
 
-	collectorSenders := etl.NewCollector(logPrefix, cfg.tmpdir, etl.NewSortableBuffer(etl.BufferOptimalSize))
+	collectorSenders := etl.NewCollector(logPrefix, cfg.tmpdir, etl.NewSortableBuffer(etl.BufferOptimalSize), logger)
 	defer collectorSenders.Close()
 
 	errCh := make(chan senderRecoveryError)
@@ -164,7 +137,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 				if j != nil {
 					n += uint64(j.index)
 				}
-				log.Info(fmt.Sprintf("[%s] Recovery", logPrefix), "block_number", n)
+				logger.Info(fmt.Sprintf("[%s] Recovery", logPrefix), "block_number", n, "ch", fmt.Sprintf("%d/%d", len(jobs), cap(jobs)))
 			case j, ok = <-out:
 				if !ok {
 					return
@@ -177,7 +150,7 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 				k := make([]byte, 4)
 				binary.BigEndian.PutUint32(k, uint32(j.index))
 				index := int(binary.BigEndian.Uint32(k))
-				if err := collectorSenders.Collect(dbutils.BlockBodyKey(s.BlockNumber+uint64(index)+1, canonical[index]), j.senders); err != nil {
+				if err := collectorSenders.Collect(dbutils.BlockBodyKey(s.BlockNumber+uint64(index)+1, j.blockHash), j.senders); err != nil {
 					errCh <- senderRecoveryError{err: j.err}
 					return
 				}
@@ -186,10 +159,10 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 	}()
 
 	var minBlockNum uint64 = math.MaxUint64
-	var minBlockHash common.Hash
+	var minBlockHash libcommon.Hash
 	var minBlockErr error
 	handleRecoverErr := func(recErr senderRecoveryError) error {
-		if recErr.blockHash == (common.Hash{}) {
+		if recErr.blockHash == (libcommon.Hash{}) {
 			return recErr.err
 		}
 
@@ -201,14 +174,14 @@ func SpawnRecoverSendersStage(cfg SendersCfg, s *StageState, u Unwinder, tx kv.R
 		return nil
 	}
 
-	bodiesC, err := tx.Cursor(kv.BlockBody)
+	bodiesC, err := tx.Cursor(kv.HeaderCanonical)
 	if err != nil {
 		return err
 	}
 	defer bodiesC.Close()
 
 Loop:
-	for k, _, err := bodiesC.Seek(dbutils.EncodeBlockNumber(s.BlockNumber + 1)); k != nil; k, _, err = bodiesC.Next() {
+	for k, v, err := bodiesC.Seek(hexutility.EncodeTs(startFrom)); k != nil; k, v, err = bodiesC.Next() {
 		if err != nil {
 			return err
 		}
@@ -216,17 +189,38 @@ Loop:
 			return err
 		}
 
-		blockNumber := binary.BigEndian.Uint64(k[:8])
-		blockHash := common.BytesToHash(k[8:])
+		blockNumber := binary.BigEndian.Uint64(k)
+		blockHash := libcommon.BytesToHash(v)
+
 		if blockNumber > to {
 			break
 		}
 
-		if canonical[blockNumber-s.BlockNumber-1] != blockHash {
-			// non-canonical case
+		has, err := cfg.blockReader.HasSenders(ctx, tx, blockHash, blockNumber)
+		if err != nil {
+			return err
+		}
+		if has {
 			continue
 		}
-		body := rawdb.ReadCanonicalBodyWithTransactions(tx, blockHash, blockNumber)
+
+		var header *types.Header
+		if header, err = cfg.blockReader.Header(ctx, tx, blockHash, blockNumber); err != nil {
+			return err
+		}
+		if header == nil {
+			logger.Warn(fmt.Sprintf("[%s] senders stage can't find header", logPrefix), "num", blockNumber, "hash", blockHash)
+			continue
+		}
+
+		var body *types.Body
+		if body, err = cfg.blockReader.BodyWithTransactions(ctx, tx, blockHash, blockNumber); err != nil {
+			return err
+		}
+		if body == nil {
+			logger.Warn(fmt.Sprintf("[%s] ReadBodyWithTransactions can't find block", logPrefix), "num", blockNumber, "hash", blockHash)
+			continue
+		}
 
 		select {
 		case recoveryErr := <-errCh:
@@ -237,7 +231,13 @@ Loop:
 				}
 				break Loop
 			}
-		case jobs <- &senderRecoveryJob{body: body, key: k, blockNumber: blockNumber, blockHash: blockHash, index: int(blockNumber - s.BlockNumber - 1)}:
+		case jobs <- &senderRecoveryJob{
+			body:        body,
+			key:         k,
+			blockNumber: blockNumber,
+			blockTime:   header.Time,
+			blockHash:   blockHash,
+			index:       int(blockNumber - s.BlockNumber - 1)}:
 		}
 	}
 
@@ -253,7 +253,15 @@ Loop:
 		}
 	}
 	if minBlockErr != nil {
-		log.Error(fmt.Sprintf("[%s] Error recovering senders for block %d %x): %v", logPrefix, minBlockNum, minBlockHash, minBlockErr))
+		logger.Error(fmt.Sprintf("[%s] Error recovering senders for block %d %x): %v", logPrefix, minBlockNum, minBlockHash, minBlockErr))
+		if cfg.badBlockHalt {
+			return minBlockErr
+		}
+		minHeader := rawdb.ReadHeader(tx, minBlockHash, minBlockNum)
+		if cfg.hd != nil {
+			cfg.hd.ReportBadHeaderPoS(minBlockHash, minHeader.ParentHash)
+		}
+
 		if to > s.BlockNumber {
 			u.UnwindTo(minBlockNum-1, minBlockHash)
 		}
@@ -282,20 +290,21 @@ Loop:
 type senderRecoveryError struct {
 	err         error
 	blockNumber uint64
-	blockHash   common.Hash
+	blockHash   libcommon.Hash
 }
 
 type senderRecoveryJob struct {
 	body        *types.Body
 	key         []byte
 	senders     []byte
-	blockHash   common.Hash
+	blockHash   libcommon.Hash
 	blockNumber uint64
+	blockTime   uint64
 	index       int
 	err         error
 }
 
-func recoverSenders(ctx context.Context, logPrefix string, cryptoContext *secp256k1.Context, config *params.ChainConfig, in, out chan *senderRecoveryJob, quit <-chan struct{}) {
+func recoverSenders(ctx context.Context, logPrefix string, cryptoContext *secp256k1.Context, config *chain.Config, in, out chan *senderRecoveryJob, quit <-chan struct{}) {
 	var job *senderRecoveryJob
 	var ok bool
 	for {
@@ -314,7 +323,7 @@ func recoverSenders(ctx context.Context, logPrefix string, cryptoContext *secp25
 		}
 
 		body := job.body
-		signer := types.MakeSigner(config, job.blockNumber)
+		signer := types.MakeSigner(config, job.blockNumber, job.blockTime)
 		job.senders = make([]byte, len(body.Transactions)*length.Addr)
 		for i, tx := range body.Transactions {
 			from, err := signer.SenderWithContext(cryptoContext, tx)
@@ -361,9 +370,6 @@ func UnwindSendersStage(s *UnwindState, tx kv.RwTx, cfg SendersCfg, ctx context.
 }
 
 func PruneSendersStage(s *PruneState, tx kv.RwTx, cfg SendersCfg, ctx context.Context) (err error) {
-	logEvery := time.NewTicker(logInterval)
-	defer logEvery.Stop()
-	to := cfg.prune.TxIndex.PruneTo(s.ForwardProgress)
 	useExternalTx := tx != nil
 	if !useExternalTx {
 		tx, err = cfg.db.BeginRw(ctx)
@@ -372,13 +378,11 @@ func PruneSendersStage(s *PruneState, tx kv.RwTx, cfg SendersCfg, ctx context.Co
 		}
 		defer tx.Rollback()
 	}
-
-	if cfg.blockRetire.Snapshots() != nil && cfg.blockRetire.Snapshots().Cfg().Enabled {
-		if err := retireBlocks(s, tx, cfg, ctx); err != nil {
-			return fmt.Errorf("retireBlocks: %w", err)
-		}
+	if cfg.blockReader.FreezingCfg().Enabled {
+		// noop. in this case senders will be deleted by BlockRetire.PruneAncientBlocks after data-freezing.
 	} else if cfg.prune.TxIndex.Enabled() {
-		if err = PruneTable(tx, kv.Senders, s.LogPrefix(), to, logEvery, ctx, 1_000); err != nil {
+		to := cfg.prune.TxIndex.PruneTo(s.ForwardProgress)
+		if err = rawdb.PruneTable(tx, kv.Senders, to, ctx, 100); err != nil {
 			return err
 		}
 	}
@@ -388,35 +392,5 @@ func PruneSendersStage(s *PruneState, tx kv.RwTx, cfg SendersCfg, ctx context.Co
 			return err
 		}
 	}
-	return nil
-}
-
-func retireBlocks(s *PruneState, tx kv.RwTx, cfg SendersCfg, ctx context.Context) (err error) {
-	// delete portion of old blocks in any case
-	if !cfg.blockRetire.Snapshots().Cfg().KeepBlocks {
-		canDeleteTo := snapshotsync.CanDeleteTo(s.ForwardProgress, cfg.blockRetire.Snapshots())
-		if err := rawdb.DeleteAncientBlocks(tx, canDeleteTo, 1_000); err != nil {
-			return nil
-		}
-	}
-
-	// if something already happens in background - noop
-	if cfg.blockRetire.Working() {
-		return nil
-	}
-	if res := cfg.blockRetire.Result(); res != nil {
-		if res.Err != nil {
-			return fmt.Errorf("[%s] retire blocks last error: %w, fromBlock=%d, toBlock=%d", s.LogPrefix(), res.Err, res.BlockFrom, res.BlockTo)
-		}
-	}
-
-	blockFrom, blockTo, ok := snapshotsync.CanRetire(s.ForwardProgress, cfg.blockRetire.Snapshots())
-	if !ok {
-		return nil
-	}
-
-	chainID, _ := uint256.FromBig(cfg.chainConfig.ChainID)
-	cfg.blockRetire.RetireBlocksInBackground(ctx, blockFrom, blockTo, *chainID, log.LvlInfo)
-
 	return nil
 }

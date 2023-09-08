@@ -19,34 +19,28 @@ package node
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 
+	"github.com/ledgerwatch/erigon-lib/common/datadir"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/crypto"
+	"github.com/ledgerwatch/erigon/node/nodecfg"
 	"github.com/ledgerwatch/erigon/p2p"
-	"github.com/ledgerwatch/erigon/rpc"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stretchr/testify/assert"
 )
 
 var (
 	testNodeKey, _ = crypto.GenerateKey()
 )
 
-func testNodeConfig(t *testing.T) *Config {
-	return &Config{
-		Name:    "test node",
-		P2P:     p2p.Config{PrivateKey: testNodeKey},
-		DataDir: t.TempDir(),
+func testNodeConfig(t *testing.T) *nodecfg.Config {
+	return &nodecfg.Config{
+		Name: "test node",
+		P2P:  p2p.Config{PrivateKey: testNodeKey},
+		Dirs: datadir.New(t.TempDir()),
 	}
 }
 
@@ -56,7 +50,7 @@ func TestNodeCloseMultipleTimes(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, err := New(testNodeConfig(t))
+	stack, err := New(testNodeConfig(t), log.New())
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
@@ -75,7 +69,7 @@ func TestNodeStartMultipleTimes(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, err := New(testNodeConfig(t))
+	stack, err := New(testNodeConfig(t), log.New())
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
@@ -106,7 +100,7 @@ func TestNodeUsedDataDir(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a new node based on the data directory
-	original, originalErr := New(&Config{DataDir: dir})
+	original, originalErr := New(&nodecfg.Config{Dirs: datadir.New(dir)}, log.New())
 	if originalErr != nil {
 		t.Fatalf("failed to create original protocol stack: %v", originalErr)
 	}
@@ -116,14 +110,14 @@ func TestNodeUsedDataDir(t *testing.T) {
 	}
 
 	// Create a second node based on the same data directory and ensure failure
-	if _, err := New(&Config{DataDir: dir}); !errors.Is(err, ErrDataDirUsed) {
+	if _, err := New(&nodecfg.Config{Dirs: datadir.New(dir)}, log.New()); !errors.Is(err, ErrDataDirUsed) {
 		t.Fatalf("duplicate datadir failure mismatch: have %v, want %v", err, ErrDataDirUsed)
 	}
 }
 
 // Tests whether a Lifecycle can be registered.
 func TestLifecycleRegistry_Successful(t *testing.T) {
-	stack, err := New(testNodeConfig(t))
+	stack, err := New(testNodeConfig(t), log.New())
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
@@ -140,28 +134,7 @@ func TestLifecycleRegistry_Successful(t *testing.T) {
 // Tests whether a service's protocols can be registered properly on the node's p2p server.
 func TestRegisterProtocols(t *testing.T) {
 	t.Skip("adjust to p2p sentry")
-	stack, err := New(testNodeConfig(t))
-	if err != nil {
-		t.Fatalf("failed to create protocol stack: %v", err)
-	}
-	defer stack.Close()
-
-	fs, err := NewFullService(stack)
-	if err != nil {
-		t.Fatalf("could not create full service: %v", err)
-	}
-
-	for _, protocol := range fs.Protocols() {
-		if !containsProtocol(stack.server.Protocols, protocol) {
-			t.Fatalf("protocol %v was not successfully registered", protocol)
-		}
-	}
-
-	for _, api := range fs.APIs() {
-		if !containsAPI(stack.rpcAPIs, api) {
-			t.Fatalf("api %v was not successfully registered", api)
-		}
-	}
+	// TODO
 }
 
 // This test checks that open databases are closed with node.
@@ -170,10 +143,11 @@ func TestNodeCloseClosesDB(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, _ := New(testNodeConfig(t))
+	logger := log.New()
+	stack, _ := New(testNodeConfig(t), logger)
 	defer stack.Close()
 
-	db, err := OpenDatabase(stack.Config(), log.New(), kv.SentryDB)
+	db, err := OpenDatabase(stack.Config(), kv.SentryDB, "", false, logger)
 	if err != nil {
 		t.Fatal("can't open DB:", err)
 	}
@@ -197,14 +171,15 @@ func TestNodeOpenDatabaseFromLifecycleStart(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, err := New(testNodeConfig(t))
+	logger := log.New()
+	stack, err := New(testNodeConfig(t), logger)
 	require.NoError(t, err)
 	defer stack.Close()
 
 	var db kv.RwDB
 	stack.RegisterLifecycle(&InstrumentedService{
 		startHook: func() {
-			db, err = OpenDatabase(stack.Config(), log.New(), kv.SentryDB)
+			db, err = OpenDatabase(stack.Config(), kv.SentryDB, "", false, logger)
 			if err != nil {
 				t.Fatal("can't open DB:", err)
 			}
@@ -224,12 +199,13 @@ func TestNodeOpenDatabaseFromLifecycleStop(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, _ := New(testNodeConfig(t))
+	logger := log.New()
+	stack, _ := New(testNodeConfig(t), logger)
 	defer stack.Close()
 
 	stack.RegisterLifecycle(&InstrumentedService{
 		stopHook: func() {
-			db, err := OpenDatabase(stack.Config(), log.New(), kv.ChainDB)
+			db, err := OpenDatabase(stack.Config(), kv.ChainDB, "", false, logger)
 			if err != nil {
 				t.Fatal("can't open DB:", err)
 			}
@@ -243,7 +219,7 @@ func TestNodeOpenDatabaseFromLifecycleStop(t *testing.T) {
 
 // Tests that registered Lifecycles get started and stopped correctly.
 func TestLifecycleLifeCycle(t *testing.T) {
-	stack, _ := New(testNodeConfig(t))
+	stack, _ := New(testNodeConfig(t), log.New())
 	defer stack.Close()
 
 	started := make(map[string]bool)
@@ -298,7 +274,7 @@ func TestLifecycleStartupError(t *testing.T) {
 		t.Skip("fix me on win please")
 	}
 
-	stack, err := New(testNodeConfig(t))
+	stack, err := New(testNodeConfig(t), log.New())
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
@@ -348,7 +324,7 @@ func TestLifecycleStartupError(t *testing.T) {
 // Tests that even if a registered Lifecycle fails to shut down cleanly, it does
 // not influence the rest of the shutdown invocations.
 func TestLifecycleTerminationGuarantee(t *testing.T) {
-	stack, err := New(testNodeConfig(t))
+	stack, err := New(testNodeConfig(t), log.New())
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
@@ -415,270 +391,11 @@ func TestLifecycleTerminationGuarantee(t *testing.T) {
 		delete(started, id)
 		delete(stopped, id)
 	}
-
-	stack.server = &p2p.Server{}
-	stack.server.PrivateKey = testNodeKey
-}
-
-// Tests whether a handler can be successfully mounted on the canonical HTTP server
-// on the given prefix
-func TestRegisterHandler_Successful(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fix me on win please")
-	}
-
-	node := createNode(t, 7878, 7979)
-
-	// create and mount handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("success")) //nolint:errcheck
-	})
-	node.RegisterHandler("test", "/test", handler)
-
-	// start node
-	if err := node.Start(); err != nil {
-		t.Fatalf("could not start node: %v", err)
-	}
-
-	// create HTTP request
-	httpReq, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:7878/test", nil)
-	if err != nil {
-		t.Error("could not issue new http request ", err)
-	}
-
-	// check response
-	resp := doHTTPRequest(t, httpReq)
-	defer resp.Body.Close()
-	buf := make([]byte, 7)
-	_, err = io.ReadFull(resp.Body, buf)
-	if err != nil {
-		t.Fatalf("could not read response: %v", err)
-	}
-	assert.Equal(t, "success", string(buf))
-}
-
-// Tests that the given handler will not be successfully mounted since no HTTP server
-// is enabled for RPC
-func TestRegisterHandler_Unsuccessful(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fix me on win please")
-	}
-
-	node, err := New(&DefaultConfig)
-	if err != nil {
-		t.Fatalf("could not create new node: %v", err)
-	}
-
-	// create and mount handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("success")) //nolint:errcheck
-	})
-	node.RegisterHandler("test", "/test", handler)
-}
-
-// Tests whether websocket requests can be handled on the same port as a regular http server.
-func TestWebsocketHTTPOnSamePort_WebsocketRequest(t *testing.T) {
-	node := startHTTP(t, 0, 0)
-	defer node.Close()
-
-	ws := strings.Replace(node.HTTPEndpoint(), "http://", "ws://", 1)
-
-	if node.WSEndpoint() != ws {
-		t.Fatalf("endpoints should be the same")
-	}
-	if !checkRPC(ws) {
-		t.Fatalf("ws request failed")
-	}
-	if !checkRPC(node.HTTPEndpoint()) {
-		t.Fatalf("http request failed")
-	}
-}
-
-func TestWebsocketHTTPOnSeparatePort_WSRequest(t *testing.T) {
-	// try and get a free port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal("can't listen:", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-
-	node := startHTTP(t, 0, port)
-	defer node.Close()
-
-	wsOnHTTP := strings.Replace(node.HTTPEndpoint(), "http://", "ws://", 1)
-	ws := fmt.Sprintf("ws://127.0.0.1:%d", port)
-
-	if node.WSEndpoint() == wsOnHTTP {
-		t.Fatalf("endpoints should not be the same")
-	}
-	// ensure ws endpoint matches the expected endpoint
-	if node.WSEndpoint() != ws {
-		t.Fatalf("ws endpoint is incorrect: expected %s, got %s", ws, node.WSEndpoint())
-	}
-
-	if !checkRPC(ws) {
-		t.Fatalf("ws request failed")
-	}
-	if !checkRPC(node.HTTPEndpoint()) {
-		t.Fatalf("http request failed")
-	}
-}
-
-type rpcPrefixTest struct {
-	httpPrefix, wsPrefix string
-	// These lists paths on which JSON-RPC should be served / not served.
-	wantHTTP   []string
-	wantNoHTTP []string
-	wantWS     []string
-	wantNoWS   []string
-}
-
-func TestNodeRPCPrefix(t *testing.T) {
-	t.Parallel()
-
-	tests := []rpcPrefixTest{
-		// both off
-		{
-			httpPrefix: "", wsPrefix: "",
-			wantHTTP:   []string{"/", "/?p=1"},
-			wantNoHTTP: []string{"/test", "/test?p=1"},
-			wantWS:     []string{"/", "/?p=1"},
-			wantNoWS:   []string{"/test", "/test?p=1"},
-		},
-		// only http prefix
-		{
-			httpPrefix: "/testprefix", wsPrefix: "",
-			wantHTTP:   []string{"/testprefix", "/testprefix?p=1", "/testprefix/x", "/testprefix/x?p=1"},
-			wantNoHTTP: []string{"/", "/?p=1", "/test", "/test?p=1"},
-			wantWS:     []string{"/", "/?p=1"},
-			wantNoWS:   []string{"/testprefix", "/testprefix?p=1", "/test", "/test?p=1"},
-		},
-		// only ws prefix
-		{
-			httpPrefix: "", wsPrefix: "/testprefix",
-			wantHTTP:   []string{"/", "/?p=1"},
-			wantNoHTTP: []string{"/testprefix", "/testprefix?p=1", "/test", "/test?p=1"},
-			wantWS:     []string{"/testprefix", "/testprefix?p=1", "/testprefix/x", "/testprefix/x?p=1"},
-			wantNoWS:   []string{"/", "/?p=1", "/test", "/test?p=1"},
-		},
-		// both set
-		{
-			httpPrefix: "/testprefix", wsPrefix: "/testprefix",
-			wantHTTP:   []string{"/testprefix", "/testprefix?p=1", "/testprefix/x", "/testprefix/x?p=1"},
-			wantNoHTTP: []string{"/", "/?p=1", "/test", "/test?p=1"},
-			wantWS:     []string{"/testprefix", "/testprefix?p=1", "/testprefix/x", "/testprefix/x?p=1"},
-			wantNoWS:   []string{"/", "/?p=1", "/test", "/test?p=1"},
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		name := fmt.Sprintf("http=%s ws=%s", test.httpPrefix, test.wsPrefix)
-		t.Run(name, func(t *testing.T) {
-			cfg := &Config{
-				HTTPHost:       "127.0.0.1",
-				HTTPPathPrefix: test.httpPrefix,
-				WSHost:         "127.0.0.1",
-				WSPathPrefix:   test.wsPrefix,
-			}
-			node, err := New(cfg)
-			if err != nil {
-				t.Fatal("can't create node:", err)
-			}
-			defer node.Close()
-			if err := node.Start(); err != nil {
-				t.Fatal("can't start node:", err)
-			}
-			test.check(t, node)
-		})
-	}
-}
-
-func (test rpcPrefixTest) check(t *testing.T, node *Node) {
-	t.Helper()
-	httpBase := "http://" + node.http.listenAddr()
-	wsBase := "ws://" + node.http.listenAddr()
-
-	if node.WSEndpoint() != wsBase+test.wsPrefix {
-		t.Errorf("Error: node has wrong WSEndpoint %q", node.WSEndpoint())
-	}
-
-	for _, path := range test.wantHTTP {
-		resp := rpcRequest(t, httpBase+path)
-		if resp.StatusCode != 200 {
-			t.Errorf("Error: %s: bad status code %d, want 200", path, resp.StatusCode)
-		}
-		resp.Body.Close()
-	}
-	for _, path := range test.wantNoHTTP {
-		resp := rpcRequest(t, httpBase+path)
-		if resp.StatusCode != 404 {
-			t.Errorf("Error: %s: bad status code %d, want 404", path, resp.StatusCode)
-		}
-		resp.Body.Close()
-	}
-	for _, path := range test.wantWS {
-		err := wsRequest(t, wsBase+path, "")
-		if err != nil {
-			t.Errorf("Error: %s: WebSocket connection failed: %v", path, err)
-		}
-	}
-	for _, path := range test.wantNoWS {
-		err := wsRequest(t, wsBase+path, "")
-		if err == nil {
-			t.Errorf("Error: %s: WebSocket connection succeeded for path in wantNoWS", path)
-		}
-
-	}
-}
-
-func createNode(t *testing.T, httpPort, wsPort int) *Node {
-	conf := &Config{
-		HTTPHost: "127.0.0.1",
-		HTTPPort: httpPort,
-		WSHost:   "127.0.0.1",
-		WSPort:   wsPort,
-	}
-	node, err := New(conf)
-	if err != nil {
-		t.Fatalf("could not create a new node: %v", err)
-	}
-	return node
-}
-
-func startHTTP(t *testing.T, httpPort, wsPort int) *Node {
-	node := createNode(t, httpPort, wsPort)
-	err := node.Start()
-	if err != nil {
-		t.Fatalf("could not start http service on node: %v", err)
-	}
-
-	return node
-}
-
-func doHTTPRequest(t *testing.T, req *http.Request) *http.Response {
-	client := http.DefaultClient
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("could not issue a GET request to the given endpoint: %v", err)
-
-	}
-	return resp
 }
 
 func containsProtocol(stackProtocols []p2p.Protocol, protocol p2p.Protocol) bool {
 	for _, a := range stackProtocols {
 		if reflect.DeepEqual(a, protocol) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAPI(stackAPIs []rpc.API, api rpc.API) bool {
-	for _, a := range stackAPIs {
-		if reflect.DeepEqual(a, api) {
 			return true
 		}
 	}

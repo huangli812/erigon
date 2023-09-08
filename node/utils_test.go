@@ -19,11 +19,6 @@
 
 package node
 
-import (
-	"github.com/ledgerwatch/erigon/p2p"
-	"github.com/ledgerwatch/erigon/rpc"
-)
-
 // NoopLifecycle is a trivial implementation of the Service interface.
 type NoopLifecycle struct{}
 
@@ -61,51 +56,4 @@ func (s *InstrumentedService) Stop() error {
 		s.stopHook()
 	}
 	return s.stop
-}
-
-type FullService struct{}
-
-func NewFullService(stack *Node) (*FullService, error) {
-	fs := new(FullService)
-
-	stack.RegisterProtocols(fs.Protocols())
-	stack.RegisterAPIs(fs.APIs())
-	stack.RegisterLifecycle(fs)
-	return fs, nil
-}
-
-func (f *FullService) Start() error { return nil }
-
-func (f *FullService) Stop() error { return nil }
-
-func (f *FullService) Protocols() []p2p.Protocol {
-	return []p2p.Protocol{
-		{
-			Name:    "test1",
-			Version: uint(1),
-		},
-		{
-			Name:    "test2",
-			Version: uint(2),
-		},
-	}
-}
-
-func (f *FullService) APIs() []rpc.API {
-	return []rpc.API{
-		{
-			Namespace: "admin",
-			Version:   "1.0",
-		},
-		{
-			Namespace: "debug",
-			Version:   "1.0",
-			Public:    true,
-		},
-		{
-			Namespace: "net",
-			Version:   "1.0",
-			Public:    true,
-		},
-	}
 }

@@ -7,14 +7,16 @@ import (
 
 	"github.com/RoaringBitmap/roaring/roaring64"
 	"github.com/holiman/uint256"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/erigon-lib/kv/bitmapdb"
+	"github.com/ledgerwatch/erigon-lib/kv/temporal/historyv2"
+
 	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/common/changeset"
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/ethdb"
-	"github.com/ledgerwatch/erigon/ethdb/bitmapdb"
 	"github.com/ledgerwatch/erigon/turbo/trie"
 )
 
@@ -60,7 +62,7 @@ func originalAccountData(original *accounts.Account, omitHashes bool) []byte {
 	return originalData
 }
 
-func (dsw *DbStateWriter) UpdateAccountData(address common.Address, original, account *accounts.Account) error {
+func (dsw *DbStateWriter) UpdateAccountData(address libcommon.Address, original, account *accounts.Account) error {
 	if err := dsw.csw.UpdateAccountData(address, original, account); err != nil {
 		return err
 	}
@@ -76,7 +78,7 @@ func (dsw *DbStateWriter) UpdateAccountData(address common.Address, original, ac
 	return nil
 }
 
-func (dsw *DbStateWriter) DeleteAccount(address common.Address, original *accounts.Account) error {
+func (dsw *DbStateWriter) DeleteAccount(address libcommon.Address, original *accounts.Account) error {
 	if err := dsw.csw.DeleteAccount(address, original); err != nil {
 		return err
 	}
@@ -84,7 +86,7 @@ func (dsw *DbStateWriter) DeleteAccount(address common.Address, original *accoun
 	if err != nil {
 		return err
 	}
-	if err := dsw.db.Delete(kv.HashedAccounts, addrHash[:], nil); err != nil {
+	if err := dsw.db.Delete(kv.HashedAccounts, addrHash[:]); err != nil {
 		return err
 	}
 	if original.Incarnation > 0 {
@@ -97,7 +99,7 @@ func (dsw *DbStateWriter) DeleteAccount(address common.Address, original *accoun
 	return nil
 }
 
-func (dsw *DbStateWriter) UpdateAccountCode(address common.Address, incarnation uint64, codeHash common.Hash, code []byte) error {
+func (dsw *DbStateWriter) UpdateAccountCode(address libcommon.Address, incarnation uint64, codeHash libcommon.Hash, code []byte) error {
 	if err := dsw.csw.UpdateAccountCode(address, incarnation, codeHash, code); err != nil {
 		return err
 	}
@@ -116,7 +118,7 @@ func (dsw *DbStateWriter) UpdateAccountCode(address common.Address, incarnation 
 	return nil
 }
 
-func (dsw *DbStateWriter) WriteAccountStorage(address common.Address, incarnation uint64, key *common.Hash, original, value *uint256.Int) error {
+func (dsw *DbStateWriter) WriteAccountStorage(address libcommon.Address, incarnation uint64, key *libcommon.Hash, original, value *uint256.Int) error {
 	// We delegate here first to let the changeSetWrite make its own decision on whether to proceed in case *original == *value
 	if err := dsw.csw.WriteAccountStorage(address, incarnation, key, original, value); err != nil {
 		return err
@@ -136,12 +138,12 @@ func (dsw *DbStateWriter) WriteAccountStorage(address common.Address, incarnatio
 
 	v := value.Bytes()
 	if len(v) == 0 {
-		return dsw.db.Delete(kv.HashedStorage, compositeKey, nil)
+		return dsw.db.Delete(kv.HashedStorage, compositeKey)
 	}
 	return dsw.db.Put(kv.HashedStorage, compositeKey, v)
 }
 
-func (dsw *DbStateWriter) CreateContract(address common.Address) error {
+func (dsw *DbStateWriter) CreateContract(address libcommon.Address) error {
 	if err := dsw.csw.CreateContract(address); err != nil {
 		return err
 	}
@@ -159,7 +161,7 @@ func (dsw *DbStateWriter) WriteHistory() error {
 	if err != nil {
 		return err
 	}
-	err = writeIndex(dsw.blockNr, accountChanges, kv.AccountsHistory, dsw.db.(ethdb.HasTx).Tx().(kv.RwTx))
+	err = writeIndex(dsw.blockNr, accountChanges, kv.E2AccountsHistory, dsw.db.(ethdb.HasTx).Tx().(kv.RwTx))
 	if err != nil {
 		return err
 	}
@@ -168,7 +170,7 @@ func (dsw *DbStateWriter) WriteHistory() error {
 	if err != nil {
 		return err
 	}
-	err = writeIndex(dsw.blockNr, storageChanges, kv.StorageHistory, dsw.db.(ethdb.HasTx).Tx().(kv.RwTx))
+	err = writeIndex(dsw.blockNr, storageChanges, kv.E2StorageHistory, dsw.db.(ethdb.HasTx).Tx().(kv.RwTx))
 	if err != nil {
 		return err
 	}
@@ -176,12 +178,12 @@ func (dsw *DbStateWriter) WriteHistory() error {
 	return nil
 }
 
-func writeIndex(blocknum uint64, changes *changeset.ChangeSet, bucket string, changeDb kv.RwTx) error {
+func writeIndex(blocknum uint64, changes *historyv2.ChangeSet, bucket string, changeDb kv.RwTx) error {
 	buf := bytes.NewBuffer(nil)
 	for _, change := range changes.Changes {
 		k := dbutils.CompositeKeyWithoutIncarnation(change.Key)
 
-		index, err := bitmapdb.Get64(changeDb, bucket, k, 0, math.MaxUint32)
+		index, err := bitmapdb.Get64(changeDb, bucket, k, math.MaxUint32, math.MaxUint32)
 		if err != nil {
 			return fmt.Errorf("find chunk failed: %w", err)
 		}

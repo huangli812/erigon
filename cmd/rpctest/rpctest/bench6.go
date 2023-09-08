@@ -2,9 +2,10 @@ package rpctest
 
 import (
 	"fmt"
-	"github.com/ledgerwatch/erigon/common"
 	"net/http"
 	"time"
+
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 )
 
 func Bench6(erigon_url string) {
@@ -28,7 +29,7 @@ func Bench6(erigon_url string) {
 	}
 	lastBlock := blockNumber.Number
 	fmt.Printf("Last block: %d\n", lastBlock)
-	accounts := make(map[common.Address]struct{})
+	accounts := make(map[libcommon.Address]struct{})
 	firstBn := 100000
 	for bn := firstBn; bn <= int(lastBlock); bn++ {
 		req_id++

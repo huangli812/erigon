@@ -24,26 +24,32 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"math/rand"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/holiman/uint256"
+	"github.com/stretchr/testify/assert"
+
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/fixedgas"
+	types2 "github.com/ledgerwatch/erigon-lib/types"
+
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/u256"
 	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/rlp"
-	"github.com/stretchr/testify/assert"
 )
 
 // The values in those tests are from the Transaction Tests
 // at github.com/ethereum/tests.
 var (
-	testAddr = common.HexToAddress("b94f5374fce5edbc8e2a8697c15331677e6ebf0b")
+	testAddr = libcommon.HexToAddress("b94f5374fce5edbc8e2a8697c15331677e6ebf0b")
 
 	emptyTx = NewTransaction(
 		0,
-		common.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87"),
+		libcommon.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87"),
 		uint256.NewInt(0), 0, uint256.NewInt(0),
 		nil,
 	)
@@ -81,15 +87,15 @@ var (
 
 	dynFeeTx = &DynamicFeeTransaction{
 		CommonTx: CommonTx{
-			ChainID: u256.Num1,
-			Nonce:   3,
-			To:      &testAddr,
-			Value:   uint256.NewInt(10),
-			Gas:     25000,
-			Data:    common.FromHex("5544"),
+			Nonce: 3,
+			To:    &testAddr,
+			Value: uint256.NewInt(10),
+			Gas:   25000,
+			Data:  common.FromHex("5544"),
 		},
-		Tip:    uint256.NewInt(1),
-		FeeCap: uint256.NewInt(1),
+		ChainID: u256.Num1,
+		Tip:     uint256.NewInt(1),
+		FeeCap:  uint256.NewInt(1),
 	}
 
 	signedDynFeeTx, _ = dynFeeTx.WithSignature(
@@ -100,7 +106,7 @@ var (
 
 func TestDecodeEmptyInput(t *testing.T) {
 	input := []byte{}
-	_, err := DecodeTransaction(rlp.NewStream(bytes.NewReader(input), 0))
+	_, err := DecodeTransaction(input)
 	if !errors.Is(err, io.EOF) {
 		t.Fatal("wrong error:", err)
 	}
@@ -108,17 +114,17 @@ func TestDecodeEmptyInput(t *testing.T) {
 
 func TestDecodeEmptyTypedTx(t *testing.T) {
 	input := []byte{0x80}
-	_, err := DecodeTransaction(rlp.NewStream(bytes.NewReader(input), 0))
+	_, err := DecodeTransaction(input)
 	if !errors.Is(err, rlp.EOL) {
 		t.Fatal("wrong error:", err)
 	}
 }
 
 func TestTransactionSigHash(t *testing.T) {
-	if emptyTx.SigningHash(nil) != common.HexToHash("c775b99e7ad12f50d819fcd602390467e28141316969f4b57f0626f74fe3b386") {
+	if emptyTx.SigningHash(nil) != libcommon.HexToHash("c775b99e7ad12f50d819fcd602390467e28141316969f4b57f0626f74fe3b386") {
 		t.Errorf("empty transaction hash mismatch, got %x", emptyTx.SigningHash(nil))
 	}
-	if rightvrsTx.SigningHash(nil) != common.HexToHash("fe7a79529ed5f7c3375d06b26b186a8644e0e16c373d7a12be41c62d6042b77a") {
+	if rightvrsTx.SigningHash(nil) != libcommon.HexToHash("fe7a79529ed5f7c3375d06b26b186a8644e0e16c373d7a12be41c62d6042b77a") {
 		t.Errorf("RightVRS transaction hash mismatch, got %x", rightvrsTx.SigningHash(nil))
 	}
 }
@@ -136,10 +142,10 @@ func TestTransactionEncode(t *testing.T) {
 }
 
 func TestEIP2718TransactionSigHash(t *testing.T) {
-	if emptyEip2718Tx.SigningHash(big.NewInt(1)) != common.HexToHash("49b486f0ec0a60dfbbca2d30cb07c9e8ffb2a2ff41f29a1ab6737475f6ff69f3") {
+	if emptyEip2718Tx.SigningHash(big.NewInt(1)) != libcommon.HexToHash("49b486f0ec0a60dfbbca2d30cb07c9e8ffb2a2ff41f29a1ab6737475f6ff69f3") {
 		t.Errorf("empty EIP-2718 transaction hash mismatch, got %x", emptyEip2718Tx.SigningHash(big.NewInt(1)))
 	}
-	if signedEip2718Tx.SigningHash(big.NewInt(1)) != common.HexToHash("49b486f0ec0a60dfbbca2d30cb07c9e8ffb2a2ff41f29a1ab6737475f6ff69f3") {
+	if signedEip2718Tx.SigningHash(big.NewInt(1)) != libcommon.HexToHash("49b486f0ec0a60dfbbca2d30cb07c9e8ffb2a2ff41f29a1ab6737475f6ff69f3") {
 		t.Errorf("signed EIP-2718 transaction hash mismatch, got %x", signedEip2718Tx.SigningHash(big.NewInt(1)))
 	}
 }
@@ -161,26 +167,26 @@ func TestEIP2930Signer(t *testing.T) {
 		tx             Transaction
 		chainID        *big.Int
 		signer         *Signer
-		wantSignerHash common.Hash
+		wantSignerHash libcommon.Hash
 		wantSenderErr  error
 		wantSignErr    error
-		wantHash       common.Hash // after signing
+		wantHash       libcommon.Hash // after signing
 	}{
 		{
 			tx:             tx0,
 			signer:         signer1,
 			chainID:        big.NewInt(1),
-			wantSignerHash: common.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
+			wantSignerHash: libcommon.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
 			wantSenderErr:  ErrInvalidChainId,
-			wantHash:       common.HexToHash("1ccd12d8bbdb96ea391af49a35ab641e219b2dd638dea375f2bc94dd290f2549"),
+			wantHash:       libcommon.HexToHash("1ccd12d8bbdb96ea391af49a35ab641e219b2dd638dea375f2bc94dd290f2549"),
 		},
 		{
 			tx:             tx1,
 			signer:         signer1,
 			chainID:        big.NewInt(1),
 			wantSenderErr:  ErrInvalidSig,
-			wantSignerHash: common.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
-			wantHash:       common.HexToHash("1ccd12d8bbdb96ea391af49a35ab641e219b2dd638dea375f2bc94dd290f2549"),
+			wantSignerHash: libcommon.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
+			wantHash:       libcommon.HexToHash("1ccd12d8bbdb96ea391af49a35ab641e219b2dd638dea375f2bc94dd290f2549"),
 		},
 		{
 			// This checks what happens when trying to sign an unsigned tx for the wrong chain.
@@ -188,7 +194,7 @@ func TestEIP2930Signer(t *testing.T) {
 			signer:         signer2,
 			chainID:        big.NewInt(2),
 			wantSenderErr:  ErrInvalidChainId,
-			wantSignerHash: common.HexToHash("367967247499343401261d718ed5aa4c9486583e4d89251afce47f4a33c33362"),
+			wantSignerHash: libcommon.HexToHash("367967247499343401261d718ed5aa4c9486583e4d89251afce47f4a33c33362"),
 			wantSignErr:    ErrInvalidChainId,
 		},
 		{
@@ -197,7 +203,7 @@ func TestEIP2930Signer(t *testing.T) {
 			signer:         signer1,
 			chainID:        big.NewInt(1),
 			wantSenderErr:  ErrInvalidChainId,
-			wantSignerHash: common.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
+			wantSignerHash: libcommon.HexToHash("846ad7672f2a3a40c1f959cd4a8ad21786d620077084d84c8d7c077714caa139"),
 			wantSignErr:    ErrInvalidChainId,
 		},
 	}
@@ -264,7 +270,7 @@ func TestEIP1559TransactionEncode(t *testing.T) {
 		if !bytes.Equal(have, want) {
 			t.Errorf("encoded RLP mismatch, got %x", have)
 		}
-		_, err := DecodeTransaction(rlp.NewStream(bytes.NewReader(buf.Bytes()), 0))
+		_, err := DecodeTransaction(buf.Bytes())
 		if err != nil {
 			t.Fatalf("decode error: %v", err)
 		}
@@ -273,10 +279,10 @@ func TestEIP1559TransactionEncode(t *testing.T) {
 }
 
 func decodeTx(data []byte) (Transaction, error) {
-	return DecodeTransaction(rlp.NewStream(bytes.NewReader(data), 0))
+	return DecodeTransaction(data)
 }
 
-func defaultTestKey() (*ecdsa.PrivateKey, common.Address) {
+func defaultTestKey() (*ecdsa.PrivateKey, libcommon.Address) {
 	key, _ := crypto.HexToECDSA("45a915e4d060149eb4365960e6a7a45f334393093061116b197e3240065ff2d8")
 	addr := crypto.PubkeyToAddress(key.PublicKey)
 	return key, addr
@@ -327,12 +333,12 @@ func TestTransactionPriceNonceSort(t *testing.T) {
 	signer := LatestSignerForChainID(nil)
 
 	// Generate a batch of transactions with overlapping values, but shifted nonces
-	idx := map[common.Address]int{}
+	idx := map[libcommon.Address]int{}
 	groups := TransactionsGroupedBySender{}
 	for start, key := range keys {
 		addr := crypto.PubkeyToAddress(key.PublicKey)
 		for i := 0; i < 25; i++ {
-			tx, _ := SignTx(NewTransaction(uint64(start+i), common.Address{}, uint256.NewInt(100), 100, uint256.NewInt(uint64(start+i)), nil), *signer, key)
+			tx, _ := SignTx(NewTransaction(uint64(start+i), libcommon.Address{}, uint256.NewInt(100), 100, uint256.NewInt(uint64(start+i)), nil), *signer, key)
 
 			j, ok := idx[addr]
 			if ok {
@@ -386,12 +392,12 @@ func TestTransactionTimeSort(t *testing.T) {
 	signer := LatestSignerForChainID(nil)
 
 	// Generate a batch of transactions with overlapping prices, but different creation times
-	idx := map[common.Address]int{}
+	idx := map[libcommon.Address]int{}
 	groups := TransactionsGroupedBySender{}
 	for start, key := range keys {
 		addr := crypto.PubkeyToAddress(key.PublicKey)
 
-		tx, _ := SignTx(NewTransaction(0, common.Address{}, uint256.NewInt(100), 100, uint256.NewInt(1), nil), *signer, key)
+		tx, _ := SignTx(NewTransaction(0, libcommon.Address{}, uint256.NewInt(100), 100, uint256.NewInt(1), nil), *signer, key)
 		tx.(*LegacyTx).time = time.Unix(0, int64(len(keys)-start))
 		i, ok := idx[addr]
 		if ok {
@@ -436,10 +442,10 @@ func TestTransactionCoding(t *testing.T) {
 		t.Fatalf("could not generate key: %v", err)
 	}
 	var (
-		signer    = LatestSignerForChainID(common.Big1)
-		addr      = common.HexToAddress("0x0000000000000000000000000000000000000001")
-		recipient = common.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87")
-		accesses  = AccessList{{Address: addr, StorageKeys: []common.Hash{{0}}}}
+		signer    = LatestSignerForChainID(libcommon.Big1)
+		addr      = libcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+		recipient = libcommon.HexToAddress("095e7baea6a6c7c4c2dfeb977efac326af552d87")
+		accesses  = types2.AccessList{{Address: addr, StorageKeys: []libcommon.Hash{{0}}}}
 	)
 	for i := uint64(0); i < 500; i++ {
 		var txdata Transaction
@@ -574,4 +580,227 @@ func assertEqual(orig Transaction, cpy Transaction) error {
 		}
 	}
 	return nil
+}
+
+func assertEqualBlobWrapper(orig *BlobTxWrapper, cpy *BlobTxWrapper) error {
+	// compare commitments, blobs, proofs
+	if want, got := len(orig.Commitments), len(cpy.Commitments); want != got {
+		return fmt.Errorf("parsed tx commitments have unequal size: want%v, got %v", want, got)
+	}
+
+	if want, got := len(orig.Blobs), len(cpy.Blobs); want != got {
+		return fmt.Errorf("parsed tx blobs have unequal size: want%v, got %v", want, got)
+	}
+
+	if want, got := len(orig.Proofs), len(cpy.Proofs); want != got {
+		return fmt.Errorf("parsed tx proofs have unequal size: want%v, got %v", want, got)
+	}
+
+	if want, got := orig.Commitments, cpy.Commitments; !reflect.DeepEqual(want, got) {
+		return fmt.Errorf("parsed tx commitments unequal: want%v, got %v", want, got)
+	}
+
+	if want, got := orig.Blobs, cpy.Blobs; !reflect.DeepEqual(want, got) {
+		return fmt.Errorf("parsed tx blobs unequal: want%v, got %v", want, got)
+	}
+
+	if want, got := orig.Proofs, cpy.Proofs; !reflect.DeepEqual(want, got) {
+		return fmt.Errorf("parsed tx proofs unequal: want%v, got %v", want, got)
+	}
+
+	return nil
+}
+
+const N = 50
+
+var dummyBlobTxs = [N]*BlobTx{}
+var dummyBlobWrapperTxs = [N]*BlobTxWrapper{}
+
+func randIntInRange(min, max int) int {
+	return (rand.Intn(max-min) + min)
+}
+
+func randAddr() *libcommon.Address {
+	var a libcommon.Address
+	for j := 0; j < 20; j++ {
+		a[j] = byte(rand.Intn(255))
+	}
+	return &a
+}
+
+func randHash() libcommon.Hash {
+	var h libcommon.Hash
+	for i := 0; i < 32; i++ {
+		h[i] = byte(rand.Intn(255))
+	}
+	return h
+}
+
+func randHashes(n int) []libcommon.Hash {
+	h := make([]libcommon.Hash, n)
+	for i := 0; i < n; i++ {
+		h[i] = randHash()
+	}
+	return h
+}
+
+func randAccessList() types2.AccessList {
+	size := randIntInRange(4, 10)
+	var result types2.AccessList
+	for i := 0; i < size; i++ {
+		var tup types2.AccessTuple
+
+		tup.Address = *randAddr()
+		tup.StorageKeys = append(tup.StorageKeys, randHash())
+		result = append(result, tup)
+	}
+	return result
+}
+
+func randData() []byte {
+	data := make([]byte, 0, (1 << 16))
+	for j := 0; j < rand.Intn(1<<16); j++ {
+		data = append(data, byte(rand.Intn(255)))
+	}
+	return data
+}
+
+func newRandBlobTx() *BlobTx {
+	stx := &BlobTx{DynamicFeeTransaction: DynamicFeeTransaction{
+		CommonTx: CommonTx{
+			Nonce: rand.Uint64(),
+			Gas:   rand.Uint64(),
+			To:    randAddr(),
+			Value: uint256.NewInt(rand.Uint64()),
+			Data:  randData(),
+			V:     *uint256.NewInt(0),
+			R:     *uint256.NewInt(rand.Uint64()),
+			S:     *uint256.NewInt(rand.Uint64()),
+		},
+		ChainID:    uint256.NewInt(rand.Uint64()),
+		Tip:        uint256.NewInt(rand.Uint64()),
+		FeeCap:     uint256.NewInt(rand.Uint64()),
+		AccessList: randAccessList(),
+	},
+		MaxFeePerBlobGas:    uint256.NewInt(rand.Uint64()),
+		BlobVersionedHashes: randHashes(randIntInRange(1, 6)),
+	}
+	return stx
+}
+
+func printSTX(stx *BlobTx) {
+	fmt.Println("--BlobTx")
+	fmt.Printf("ChainID: %v\n", stx.ChainID)
+	fmt.Printf("Nonce: %v\n", stx.Nonce)
+	fmt.Printf("MaxPriorityFeePerGas: %v\n", stx.Tip)
+	fmt.Printf("MaxFeePerGas: %v\n", stx.FeeCap)
+	fmt.Printf("Gas: %v\n", stx.Gas)
+	fmt.Printf("To: %v\n", stx.To)
+	fmt.Printf("Value: %v\n", stx.Value)
+	fmt.Printf("Data: %v\n", stx.Data)
+	fmt.Printf("AccessList: %v\n", stx.AccessList)
+	fmt.Printf("MaxFeePerBlobGas: %v\n", stx.MaxFeePerBlobGas)
+	fmt.Printf("BlobVersionedHashes: %v\n", stx.BlobVersionedHashes)
+	fmt.Printf("V: %v\n", stx.V)
+	fmt.Printf("R: %v\n", stx.R)
+	fmt.Printf("S: %v\n", stx.S)
+	fmt.Println("-----")
+	fmt.Println()
+}
+
+func printSTXW(txw *BlobTxWrapper) {
+	fmt.Println("--BlobTxWrapper")
+	printSTX(&txw.Tx)
+	fmt.Printf("Commitments LEN: %v\n", txw.Commitments)
+	fmt.Printf("Proofs LEN: %v\n", txw.Proofs)
+	fmt.Println("-----")
+	fmt.Println()
+}
+
+func randByte() byte {
+	return byte(rand.Intn(256))
+}
+
+func newRandCommitments(size int) BlobKzgs {
+	var result BlobKzgs
+	for i := 0; i < size; i++ {
+		var arr [LEN_48]byte
+		for j := 0; j < LEN_48; j++ {
+			arr[j] = randByte()
+		}
+		result = append(result, arr)
+	}
+	return result
+}
+
+func newRandProofs(size int) KZGProofs {
+	var result KZGProofs
+	for i := 0; i < size; i++ {
+		var arr [LEN_48]byte
+		for j := 0; j < LEN_48; j++ {
+			arr[j] = randByte()
+		}
+		result = append(result, arr)
+	}
+	return result
+}
+
+func newRandBlobs(size int) Blobs {
+	var result Blobs
+	for i := 0; i < size; i++ {
+		var arr [fixedgas.BlobSize]byte
+		for j := 0; j < fixedgas.BlobSize; j++ {
+			arr[j] = randByte()
+		}
+		result = append(result, arr)
+	}
+	return result
+}
+
+func newRandBlobWrapper() *BlobTxWrapper {
+	btxw := *newRandBlobTx()
+	l := len(btxw.BlobVersionedHashes)
+	return &BlobTxWrapper{
+		Tx:          btxw,
+		Commitments: newRandCommitments(l),
+		Blobs:       newRandBlobs(l),
+		Proofs:      newRandProofs(l),
+	}
+}
+
+func populateBlobTxs() {
+	for i := 0; i < N; i++ {
+		dummyBlobTxs[i] = newRandBlobTx()
+	}
+}
+
+func populateBlobWrapperTxs() {
+	for i := 0; i < N; i++ {
+		dummyBlobWrapperTxs[i] = newRandBlobWrapper()
+	}
+}
+
+func TestBlobTxEncodeDecode(t *testing.T) {
+	rand.Seed(time.Now().UnixNano())
+	populateBlobTxs()
+	for i := 0; i < N; i++ {
+		// printSTX(dummyBlobTxs[i])
+
+		tx, err := encodeDecodeBinary(dummyBlobTxs[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := assertEqual(dummyBlobTxs[i], tx); err != nil {
+			t.Fatal(err)
+		}
+
+		// JSON
+		tx, err = encodeDecodeJSON(dummyBlobTxs[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = assertEqual(dummyBlobTxs[i], tx); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

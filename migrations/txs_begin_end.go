@@ -9,23 +9,25 @@ import (
 	"time"
 
 	common2 "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/assert"
+	"github.com/ledgerwatch/erigon-lib/common/datadir"
+	"github.com/ledgerwatch/erigon-lib/common/dbg"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/log/v3"
+
 	"github.com/ledgerwatch/erigon/common"
-	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/erigon/rlp"
-	"github.com/ledgerwatch/log/v3"
 )
-
-const ASSERT = false
 
 var ErrTxsBeginEndNoMigration = fmt.Errorf("in this Erigon version DB format was changed: added additional first/last system-txs to blocks. There is no DB migration for this change. Please re-sync or switch to earlier version")
 
-var txsBeginEnd = Migration{
+var TxsBeginEnd = Migration{
 	Name: "txs_begin_end",
-	Up: func(db kv.RwDB, tmpdir string, progress []byte, BeforeCommit Callback) (err error) {
+	Up: func(db kv.RwDB, dirs datadir.Dirs, progress []byte, BeforeCommit Callback, logger log.Logger) (err error) {
 		logEvery := time.NewTicker(10 * time.Second)
 		defer logEvery.Stop()
 
@@ -37,7 +39,7 @@ var txsBeginEnd = Migration{
 			}
 			if progress != nil {
 				latestBlock = binary.BigEndian.Uint64(progress)
-				log.Info("[database version migration] Continue migration", "from_block", latestBlock)
+				logger.Info("[database version migration] Continue migration", "from_block", latestBlock)
 			} else {
 				latestBlock = bodiesProgress + 1 // include block 0
 			}
@@ -60,8 +62,8 @@ var txsBeginEnd = Migration{
 			select {
 			case <-logEvery.C:
 				var m runtime.MemStats
-				runtime.ReadMemStats(&m)
-				log.Info("[database version migration] Adding system-txs",
+				dbg.ReadMemStats(&m)
+				logger.Info("[database version migration] Adding system-txs",
 					"progress", fmt.Sprintf("%.2f%%", 100-100*float64(blockNum)/float64(latestBlock)), "block_num", blockNum,
 					"alloc", common2.ByteCount(m.Alloc), "sys", common2.ByteCount(m.Sys))
 			default:
@@ -73,7 +75,7 @@ var txsBeginEnd = Migration{
 			}
 
 			var oldBlock *types.Body
-			if ASSERT {
+			if assert.Enable {
 				oldBlock = readCanonicalBodyWithTransactionsDeprecated(tx, canonicalHash, blockNum)
 			}
 
@@ -87,7 +89,7 @@ var txsBeginEnd = Migration{
 				continue
 			}
 
-			txs, err := rawdb.CanonicalTransactions(tx, b.BaseTxId, b.TxAmount)
+			txs, err := canonicalTransactions(tx, b.BaseTxId, b.TxAmount)
 			if err != nil {
 				return err
 			}
@@ -99,20 +101,20 @@ var txsBeginEnd = Migration{
 			}
 
 			// del first tx in block
-			if err = tx.Delete(kv.EthTx, dbutils.EncodeBlockNumber(b.BaseTxId), nil); err != nil {
+			if err = tx.Delete(kv.EthTx, hexutility.EncodeTs(b.BaseTxId)); err != nil {
 				return err
 			}
 			if err := writeTransactionsNewDeprecated(tx, txs, b.BaseTxId+1); err != nil {
 				return fmt.Errorf("failed to write body txs: %w", err)
 			}
 			// del last tx in block
-			if err = tx.Delete(kv.EthTx, dbutils.EncodeBlockNumber(b.BaseTxId+uint64(b.TxAmount)-1), nil); err != nil {
+			if err = tx.Delete(kv.EthTx, hexutility.EncodeTs(b.BaseTxId+uint64(b.TxAmount)-1)); err != nil {
 				return err
 			}
 
-			if ASSERT {
+			if assert.Enable {
 				newBlock, baseTxId, txAmount := rawdb.ReadBody(tx, canonicalHash, blockNum)
-				newBlock.Transactions, err = rawdb.CanonicalTransactions(tx, baseTxId, txAmount)
+				newBlock.Transactions, err = canonicalTransactions(tx, baseTxId, txAmount)
 				for i, oldTx := range oldBlock.Transactions {
 					newTx := newBlock.Transactions[i]
 					if oldTx.GetNonce() != newTx.GetNonce() {
@@ -132,24 +134,24 @@ var txsBeginEnd = Migration{
 
 				for i := bodyForStorage.BaseTxId; i < bodyForStorage.BaseTxId+uint64(bodyForStorage.TxAmount); i++ {
 					binary.BigEndian.PutUint64(numBuf, i)
-					if err = tx.Delete(kv.NonCanonicalTxs, numBuf, nil); err != nil {
+					if err = tx.Delete(kv.NonCanonicalTxs, numBuf); err != nil {
 						return err
 					}
 				}
 
-				if err = tx.Delete(kv.BlockBody, k, nil); err != nil {
+				if err = tx.Delete(kv.BlockBody, k); err != nil {
 					return err
 				}
-				if err = tx.Delete(kv.Headers, k, nil); err != nil {
+				if err = tx.Delete(kv.Headers, k); err != nil {
 					return err
 				}
-				if err = tx.Delete(kv.HeaderTD, k, nil); err != nil {
+				if err = tx.Delete(kv.HeaderTD, k); err != nil {
 					return err
 				}
-				if err = tx.Delete(kv.HeaderNumber, k[8:], nil); err != nil {
+				if err = tx.Delete(kv.HeaderNumber, k[8:]); err != nil {
 					return err
 				}
-				if err = tx.Delete(kv.HeaderNumber, k[8:], nil); err != nil {
+				if err = tx.Delete(kv.HeaderNumber, k[8:]); err != nil {
 					return err
 				}
 
@@ -224,24 +226,6 @@ var txsBeginEnd = Migration{
 	},
 }
 
-func writeRawBodyDeprecated(db kv.RwTx, hash common.Hash, number uint64, body *types.RawBody) error {
-	baseTxId, err := db.IncrementSequence(kv.EthTx, uint64(len(body.Transactions)))
-	if err != nil {
-		return err
-	}
-	data := types.BodyForStorage{
-		BaseTxId: baseTxId,
-		TxAmount: uint32(len(body.Transactions)),
-		Uncles:   body.Uncles,
-	}
-	if err = rawdb.WriteBodyForStorage(db, hash, number, &data); err != nil {
-		return fmt.Errorf("failed to write body: %w", err)
-	}
-	if err = rawdb.WriteRawTransactions(db, body.Transactions, baseTxId); err != nil {
-		return fmt.Errorf("failed to WriteRawTransactions: %w, blockNum=%d", err, number)
-	}
-	return nil
-}
 func writeTransactionsNewDeprecated(db kv.RwTx, txs []types.Transaction, baseTxId uint64) error {
 	txId := baseTxId
 	buf := bytes.NewBuffer(nil)
@@ -262,7 +246,7 @@ func writeTransactionsNewDeprecated(db kv.RwTx, txs []types.Transaction, baseTxI
 	return nil
 }
 
-func readCanonicalBodyWithTransactionsDeprecated(db kv.Getter, hash common.Hash, number uint64) *types.Body {
+func readCanonicalBodyWithTransactionsDeprecated(db kv.Getter, hash common2.Hash, number uint64) *types.Body {
 	data := rawdb.ReadStorageBodyRLP(db, hash, number)
 	if len(data) == 0 {
 		return nil
@@ -275,7 +259,7 @@ func readCanonicalBodyWithTransactionsDeprecated(db kv.Getter, hash common.Hash,
 	}
 	body := new(types.Body)
 	body.Uncles = bodyForStorage.Uncles
-	body.Transactions, err = rawdb.CanonicalTransactions(db, bodyForStorage.BaseTxId, bodyForStorage.TxAmount)
+	body.Transactions, err = canonicalTransactions(db, bodyForStorage.BaseTxId, bodyForStorage.TxAmount)
 	if err != nil {
 		log.Error("failed ReadTransactionByHash", "hash", hash, "block", number, "err", err)
 		return nil
@@ -283,13 +267,13 @@ func readCanonicalBodyWithTransactionsDeprecated(db kv.Getter, hash common.Hash,
 	return body
 }
 
-func makeBodiesNonCanonicalDeprecated(tx kv.RwTx, from uint64, ctx context.Context, logPrefix string, logEvery *time.Ticker) error {
+func MakeBodiesNonCanonicalDeprecated(tx kv.RwTx, from uint64, ctx context.Context, logPrefix string, logEvery *time.Ticker) error {
 	for blockNum := from; ; blockNum++ {
 		h, err := rawdb.ReadCanonicalHash(tx, blockNum)
 		if err != nil {
 			return err
 		}
-		if h == (common.Hash{}) {
+		if h == (common2.Hash{}) {
 			break
 		}
 		data := rawdb.ReadStorageBodyRLP(tx, h, blockNum)
@@ -308,12 +292,12 @@ func makeBodiesNonCanonicalDeprecated(tx kv.RwTx, from uint64, ctx context.Conte
 			return err
 		}
 		id := newBaseId
-		if err := tx.ForAmount(kv.EthTx, dbutils.EncodeBlockNumber(bodyForStorage.BaseTxId), bodyForStorage.TxAmount, func(k, v []byte) error {
-			if err := tx.Put(kv.NonCanonicalTxs, dbutils.EncodeBlockNumber(id), v); err != nil {
+		if err := tx.ForAmount(kv.EthTx, hexutility.EncodeTs(bodyForStorage.BaseTxId), bodyForStorage.TxAmount, func(k, v []byte) error {
+			if err := tx.Put(kv.NonCanonicalTxs, hexutility.EncodeTs(id), v); err != nil {
 				return err
 			}
 			id++
-			return tx.Delete(kv.EthTx, k, nil)
+			return tx.Delete(kv.EthTx, k)
 		}); err != nil {
 			return err
 		}
@@ -351,4 +335,27 @@ func makeBodiesNonCanonicalDeprecated(tx kv.RwTx, from uint64, ctx context.Conte
 	}
 
 	return nil
+}
+
+func canonicalTransactions(db kv.Getter, baseTxId uint64, amount uint32) ([]types.Transaction, error) {
+	if amount == 0 {
+		return []types.Transaction{}, nil
+	}
+	txIdKey := make([]byte, 8)
+	txs := make([]types.Transaction, amount)
+	binary.BigEndian.PutUint64(txIdKey, baseTxId)
+	i := uint32(0)
+
+	if err := db.ForAmount(kv.EthTx, txIdKey, amount, func(k, v []byte) error {
+		var decodeErr error
+		if txs[i], decodeErr = types.UnmarshalTransactionFromBinary(v); decodeErr != nil {
+			return decodeErr
+		}
+		i++
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	txs = txs[:i] // user may request big "amount", but db can return small "amount". Return as much as we found.
+	return txs, nil
 }

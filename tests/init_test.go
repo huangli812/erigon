@@ -20,22 +20,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 
-	"github.com/ledgerwatch/erigon/params"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	"golang.org/x/exp/slices"
 )
 
 var (
 	baseDir            = filepath.Join(".", "testdata")
 	blockTestDir       = filepath.Join(baseDir, "BlockchainTests")
+	blockEipTestDir    = filepath.Join(baseDir, "EIPTests", "BlockchainTests")
 	stateTestDir       = filepath.Join(baseDir, "GeneralStateTests")
 	transactionTestDir = filepath.Join(baseDir, "TransactionTests")
 	rlpTestDir         = filepath.Join(baseDir, "RLPTests")
@@ -43,7 +43,7 @@ var (
 )
 
 func readJSON(reader io.Reader, value interface{}) error {
-	data, err := ioutil.ReadAll(reader)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return fmt.Errorf("error reading JSON file: %w", err)
 	}
@@ -96,7 +96,7 @@ type testMatcher struct {
 
 type testConfig struct {
 	p      *regexp.Regexp
-	config params.ChainConfig
+	config chain.Config
 }
 
 type testFailure struct {
@@ -127,7 +127,7 @@ func (tm *testMatcher) whitelist(pattern string) {
 }
 
 // config defines chain config for tests matching the pattern.
-func (tm *testMatcher) config(pattern string, cfg params.ChainConfig) {
+func (tm *testMatcher) config(pattern string, cfg chain.Config) {
 	tm.configpat = append(tm.configpat, testConfig{regexp.MustCompile(pattern), cfg})
 }
 
@@ -153,14 +153,14 @@ func (tm *testMatcher) findSkip(name string) (reason string, skipload bool) {
 }
 
 // findConfig returns the chain config matching defined patterns.
-func (tm *testMatcher) findConfig(name string) *params.ChainConfig {
+func (tm *testMatcher) findConfig(name string) *chain.Config {
 	// TODO(fjl): name can be derived from testing.T when min Go version is 1.8
 	for _, m := range tm.configpat {
 		if m.p.MatchString(name) {
 			return &m.config
 		}
 	}
-	return new(params.ChainConfig)
+	return new(chain.Config)
 }
 
 func (tm *testMatcher) checkFailure(t *testing.T, err error) error {
@@ -225,7 +225,7 @@ func (tm *testMatcher) runTestFile(t *testing.T, path, name string, runTest inte
 			t.Skip("Skipped by whitelist")
 		}
 	}
-	t.Parallel()
+	//t.Parallel()
 
 	// Load the file as map[string]<testType>.
 	m := makeMapFromTestFunc(runTest)
@@ -267,7 +267,7 @@ func sortedMapKeys(m reflect.Value) []string {
 	for i, k := range m.MapKeys() {
 		keys[i] = k.String()
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -280,7 +280,7 @@ func runTestFunc(runTest interface{}, t *testing.T, name string, m reflect.Value
 }
 
 func TestMatcherWhitelist(t *testing.T) {
-	t.Parallel()
+	//t.Parallel()
 	tm := new(testMatcher)
 	tm.whitelist("invalid*")
 	tm.walk(t, rlpTestDir, func(t *testing.T, name string, test *RLPTest) {

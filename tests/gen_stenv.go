@@ -7,6 +7,8 @@ import (
 	"errors"
 	"math/big"
 
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/math"
 )
@@ -18,14 +20,16 @@ func (s stEnv) MarshalJSON() ([]byte, error) {
 	type stEnv struct {
 		Coinbase   common.UnprefixedAddress `json:"currentCoinbase"   gencodec:"required"`
 		Difficulty *math.HexOrDecimal256    `json:"currentDifficulty" gencodec:"required"`
+		Random     *math.HexOrDecimal256    `json:"currentRandom"     gencodec:"optional"`
 		GasLimit   math.HexOrDecimal64      `json:"currentGasLimit"   gencodec:"required"`
 		Number     math.HexOrDecimal64      `json:"currentNumber"     gencodec:"required"`
 		Timestamp  math.HexOrDecimal64      `json:"currentTimestamp"  gencodec:"required"`
-		BaseFee    *math.HexOrDecimal256    `json:"currentBaseFee"  gencodec:"optional"`
+		BaseFee    *math.HexOrDecimal256    `json:"currentBaseFee"    gencodec:"optional"`
 	}
 	var enc stEnv
 	enc.Coinbase = common.UnprefixedAddress(s.Coinbase)
 	enc.Difficulty = (*math.HexOrDecimal256)(s.Difficulty)
+	enc.Random = (*math.HexOrDecimal256)(s.Random)
 	enc.GasLimit = math.HexOrDecimal64(s.GasLimit)
 	enc.Number = math.HexOrDecimal64(s.Number)
 	enc.Timestamp = math.HexOrDecimal64(s.Timestamp)
@@ -38,10 +42,11 @@ func (s *stEnv) UnmarshalJSON(input []byte) error {
 	type stEnv struct {
 		Coinbase   *common.UnprefixedAddress `json:"currentCoinbase"   gencodec:"required"`
 		Difficulty *math.HexOrDecimal256     `json:"currentDifficulty" gencodec:"required"`
+		Random     *math.HexOrDecimal256     `json:"currentRandom"     gencodec:"optional"`
 		GasLimit   *math.HexOrDecimal64      `json:"currentGasLimit"   gencodec:"required"`
 		Number     *math.HexOrDecimal64      `json:"currentNumber"     gencodec:"required"`
 		Timestamp  *math.HexOrDecimal64      `json:"currentTimestamp"  gencodec:"required"`
-		BaseFee    *math.HexOrDecimal256     `json:"currentBaseFee"  gencodec:"optional"`
+		BaseFee    *math.HexOrDecimal256     `json:"currentBaseFee"    gencodec:"optional"`
 	}
 	var dec stEnv
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -50,11 +55,14 @@ func (s *stEnv) UnmarshalJSON(input []byte) error {
 	if dec.Coinbase == nil {
 		return errors.New("missing required field 'currentCoinbase' for stEnv")
 	}
-	s.Coinbase = common.Address(*dec.Coinbase)
+	s.Coinbase = libcommon.Address(*dec.Coinbase)
 	if dec.Difficulty == nil {
 		return errors.New("missing required field 'currentDifficulty' for stEnv")
 	}
 	s.Difficulty = (*big.Int)(dec.Difficulty)
+	if dec.Random != nil {
+		s.Random = (*big.Int)(dec.Random)
+	}
 	if dec.GasLimit == nil {
 		return errors.New("missing required field 'currentGasLimit' for stEnv")
 	}

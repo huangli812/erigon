@@ -17,40 +17,29 @@
 package eth
 
 import (
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"math/bits"
 
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/direct"
 	proto_sentry "github.com/ledgerwatch/erigon-lib/gointerfaces/sentry"
-	"github.com/ledgerwatch/erigon/common"
+
 	"github.com/ledgerwatch/erigon/core/forkid"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/rlp"
 )
 
-// Constants to match up protocol versions and messages
-const (
-	ETH66 = 66
-)
-
 var ProtocolToString = map[uint]string{
-	ETH66: "eth66",
+	direct.ETH66: "eth66",
+	direct.ETH67: "eth67",
+	direct.ETH68: "eth68",
 }
 
 // ProtocolName is the official short name of the `eth` protocol used during
 // devp2p capability negotiation.
 const ProtocolName = "eth"
-
-// ProtocolVersions are the supported versions of the `eth` protocol (first
-// is primary).
-var ProtocolVersions = []uint{ETH66} //nolint
-
-// protocolLengths are the number of implemented message corresponding to
-// different protocol versions.
-var protocolLengths = map[uint]uint64{ETH66: 17} //nolint
 
 // maxMessageSize is the maximum cap on the size of a protocol message.
 const maxMessageSize = 10 * 1024 * 1024
@@ -77,27 +66,8 @@ const (
 	PooledTransactionsMsg         = 0x0a
 )
 
-//nolint
-var ToString = map[uint]string{
-	StatusMsg:                     "StatusMsg",
-	NewBlockHashesMsg:             "NewBlockHashesMsg",
-	TransactionsMsg:               "TransactionsMsg",
-	GetBlockHeadersMsg:            "GetBlockHeadersMsg",
-	BlockHeadersMsg:               "BlockHeadersMsg",
-	GetBlockBodiesMsg:             "GetBlockBodiesMsg",
-	BlockBodiesMsg:                "BlockBodiesMsg",
-	NewBlockMsg:                   "NewBlockMsg",
-	GetNodeDataMsg:                "GetNodeDataMsg",
-	NodeDataMsg:                   "NodeDataMsg",
-	GetReceiptsMsg:                "GetReceiptsMsg",
-	ReceiptsMsg:                   "ReceiptsMsg",
-	NewPooledTransactionHashesMsg: "NewPooledTransactionHashesMsg",
-	GetPooledTransactionsMsg:      "GetPooledTransactionsMsg",
-	PooledTransactionsMsg:         "PooledTransactionsMsg",
-}
-
 var ToProto = map[uint]map[uint64]proto_sentry.MessageId{
-	ETH66: {
+	direct.ETH66: {
 		GetBlockHeadersMsg:            proto_sentry.MessageId_GET_BLOCK_HEADERS_66,
 		BlockHeadersMsg:               proto_sentry.MessageId_BLOCK_HEADERS_66,
 		GetBlockBodiesMsg:             proto_sentry.MessageId_GET_BLOCK_BODIES_66,
@@ -113,10 +83,38 @@ var ToProto = map[uint]map[uint64]proto_sentry.MessageId{
 		GetPooledTransactionsMsg:      proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66,
 		PooledTransactionsMsg:         proto_sentry.MessageId_POOLED_TRANSACTIONS_66,
 	},
+	direct.ETH67: {
+		GetBlockHeadersMsg:            proto_sentry.MessageId_GET_BLOCK_HEADERS_66,
+		BlockHeadersMsg:               proto_sentry.MessageId_BLOCK_HEADERS_66,
+		GetBlockBodiesMsg:             proto_sentry.MessageId_GET_BLOCK_BODIES_66,
+		BlockBodiesMsg:                proto_sentry.MessageId_BLOCK_BODIES_66,
+		GetReceiptsMsg:                proto_sentry.MessageId_GET_RECEIPTS_66,
+		ReceiptsMsg:                   proto_sentry.MessageId_RECEIPTS_66,
+		NewBlockHashesMsg:             proto_sentry.MessageId_NEW_BLOCK_HASHES_66,
+		NewBlockMsg:                   proto_sentry.MessageId_NEW_BLOCK_66,
+		TransactionsMsg:               proto_sentry.MessageId_TRANSACTIONS_66,
+		NewPooledTransactionHashesMsg: proto_sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_66,
+		GetPooledTransactionsMsg:      proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66,
+		PooledTransactionsMsg:         proto_sentry.MessageId_POOLED_TRANSACTIONS_66,
+	},
+	direct.ETH68: {
+		GetBlockHeadersMsg:            proto_sentry.MessageId_GET_BLOCK_HEADERS_66,
+		BlockHeadersMsg:               proto_sentry.MessageId_BLOCK_HEADERS_66,
+		GetBlockBodiesMsg:             proto_sentry.MessageId_GET_BLOCK_BODIES_66,
+		BlockBodiesMsg:                proto_sentry.MessageId_BLOCK_BODIES_66,
+		GetReceiptsMsg:                proto_sentry.MessageId_GET_RECEIPTS_66,
+		ReceiptsMsg:                   proto_sentry.MessageId_RECEIPTS_66,
+		NewBlockHashesMsg:             proto_sentry.MessageId_NEW_BLOCK_HASHES_66,
+		NewBlockMsg:                   proto_sentry.MessageId_NEW_BLOCK_66,
+		TransactionsMsg:               proto_sentry.MessageId_TRANSACTIONS_66,
+		NewPooledTransactionHashesMsg: proto_sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_68, // Modified since ETH66
+		GetPooledTransactionsMsg:      proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66,
+		PooledTransactionsMsg:         proto_sentry.MessageId_POOLED_TRANSACTIONS_66,
+	},
 }
 
 var FromProto = map[uint]map[proto_sentry.MessageId]uint64{
-	ETH66: {
+	direct.ETH66: {
 		proto_sentry.MessageId_GET_BLOCK_HEADERS_66:             GetBlockHeadersMsg,
 		proto_sentry.MessageId_BLOCK_HEADERS_66:                 BlockHeadersMsg,
 		proto_sentry.MessageId_GET_BLOCK_BODIES_66:              GetBlockBodiesMsg,
@@ -132,18 +130,35 @@ var FromProto = map[uint]map[proto_sentry.MessageId]uint64{
 		proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66:       GetPooledTransactionsMsg,
 		proto_sentry.MessageId_POOLED_TRANSACTIONS_66:           PooledTransactionsMsg,
 	},
+	direct.ETH67: {
+		proto_sentry.MessageId_GET_BLOCK_HEADERS_66:             GetBlockHeadersMsg,
+		proto_sentry.MessageId_BLOCK_HEADERS_66:                 BlockHeadersMsg,
+		proto_sentry.MessageId_GET_BLOCK_BODIES_66:              GetBlockBodiesMsg,
+		proto_sentry.MessageId_BLOCK_BODIES_66:                  BlockBodiesMsg,
+		proto_sentry.MessageId_GET_RECEIPTS_66:                  GetReceiptsMsg,
+		proto_sentry.MessageId_RECEIPTS_66:                      ReceiptsMsg,
+		proto_sentry.MessageId_NEW_BLOCK_HASHES_66:              NewBlockHashesMsg,
+		proto_sentry.MessageId_NEW_BLOCK_66:                     NewBlockMsg,
+		proto_sentry.MessageId_TRANSACTIONS_66:                  TransactionsMsg,
+		proto_sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_66: NewPooledTransactionHashesMsg,
+		proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66:       GetPooledTransactionsMsg,
+		proto_sentry.MessageId_POOLED_TRANSACTIONS_66:           PooledTransactionsMsg,
+	},
+	direct.ETH68: {
+		proto_sentry.MessageId_GET_BLOCK_HEADERS_66:             GetBlockHeadersMsg,
+		proto_sentry.MessageId_BLOCK_HEADERS_66:                 BlockHeadersMsg,
+		proto_sentry.MessageId_GET_BLOCK_BODIES_66:              GetBlockBodiesMsg,
+		proto_sentry.MessageId_BLOCK_BODIES_66:                  BlockBodiesMsg,
+		proto_sentry.MessageId_GET_RECEIPTS_66:                  GetReceiptsMsg,
+		proto_sentry.MessageId_RECEIPTS_66:                      ReceiptsMsg,
+		proto_sentry.MessageId_NEW_BLOCK_HASHES_66:              NewBlockHashesMsg,
+		proto_sentry.MessageId_NEW_BLOCK_66:                     NewBlockMsg,
+		proto_sentry.MessageId_TRANSACTIONS_66:                  TransactionsMsg,
+		proto_sentry.MessageId_NEW_POOLED_TRANSACTION_HASHES_68: NewPooledTransactionHashesMsg,
+		proto_sentry.MessageId_GET_POOLED_TRANSACTIONS_66:       GetPooledTransactionsMsg,
+		proto_sentry.MessageId_POOLED_TRANSACTIONS_66:           PooledTransactionsMsg,
+	},
 }
-
-var (
-	ErrNoStatusMsg             = errors.New("no status message")
-	errMsgTooLarge             = errors.New("message too long")
-	errDecode                  = errors.New("invalid message")
-	errInvalidMsgCode          = errors.New("invalid message code") //nolint
-	ErrProtocolVersionMismatch = errors.New("protocol version mismatch")
-	ErrNetworkIDMismatch       = errors.New("network ID mismatch")
-	ErrGenesisMismatch         = errors.New("genesis mismatch")
-	ErrForkIDRejected          = errors.New("fork ID rejected")
-)
 
 // Packet represents a p2p message in the `eth` protocol.
 type Packet interface {
@@ -156,96 +171,15 @@ type StatusPacket struct {
 	ProtocolVersion uint32
 	NetworkID       uint64
 	TD              *big.Int
-	Head            common.Hash
-	Genesis         common.Hash
+	Head            libcommon.Hash
+	Genesis         libcommon.Hash
 	ForkID          forkid.ID
 }
 
 // NewBlockHashesPacket is the network packet for the block announcements.
 type NewBlockHashesPacket []struct {
-	Hash   common.Hash // Hash of one particular block being announced
-	Number uint64      // Number of one particular block being announced
-}
-
-// Unpack retrieves the block hashes and numbers from the announcement packet
-// and returns them in a split flat format that's more consistent with the
-// internal data structures.
-func (p *NewBlockHashesPacket) Unpack() ([]common.Hash, []uint64) {
-	var (
-		hashes  = make([]common.Hash, len(*p))
-		numbers = make([]uint64, len(*p))
-	)
-	for i, body := range *p {
-		hashes[i], numbers[i] = body.Hash, body.Number
-	}
-	return hashes, numbers
-}
-
-// TransactionsPacket is the network packet for broadcasting new transactions.
-type TransactionsPacket []types.Transaction
-
-func (tp TransactionsPacket) EncodeRLP(w io.Writer) error {
-	encodingSize := 0
-	// size of Transactions
-	encodingSize++
-	var txsLen int
-	for _, tx := range tp {
-		txsLen++
-		var txLen int
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			txLen = t.EncodingSize()
-		case *types.AccessListTx:
-			txLen = t.EncodingSize()
-		case *types.DynamicFeeTransaction:
-			txLen = t.EncodingSize()
-		}
-		if txLen >= 56 {
-			txsLen += (bits.Len(uint(txLen)) + 7) / 8
-		}
-		txsLen += txLen
-	}
-	if txsLen >= 56 {
-		encodingSize += (bits.Len(uint(txsLen)) + 7) / 8
-	}
-	encodingSize += txsLen
-	// encode Transactions
-	var b [33]byte
-	if err := types.EncodeStructSizePrefix(encodingSize, w, b[:]); err != nil {
-		return err
-	}
-	for _, tx := range tp {
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.AccessListTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.DynamicFeeTransaction:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (tp *TransactionsPacket) DecodeRLP(s *rlp.Stream) error {
-	_, err := s.List()
-	if err != nil {
-		return err
-	}
-	var tx types.Transaction
-	for tx, err = types.DecodeTransaction(s); err == nil; tx, err = types.DecodeTransaction(s) {
-		*tp = append(*tp, tx)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	return s.ListEnd()
+	Hash   libcommon.Hash // Hash of one particular block being announced
+	Number uint64         // Number of one particular block being announced
 }
 
 // GetBlockHeadersPacket represents a block header query.
@@ -264,14 +198,14 @@ type GetBlockHeadersPacket66 struct {
 
 // HashOrNumber is a combined field for specifying an origin block.
 type HashOrNumber struct {
-	Hash   common.Hash // Block hash from which to retrieve headers (excludes Number)
-	Number uint64      // Block hash from which to retrieve headers (excludes Hash)
+	Hash   libcommon.Hash // Block hash from which to retrieve headers (excludes Number)
+	Number uint64         // Block hash from which to retrieve headers (excludes Hash)
 }
 
 // EncodeRLP is a specialized encoder for HashOrNumber to encode only one of the
 // two contained union fields.
 func (hn *HashOrNumber) EncodeRLP(w io.Writer) error {
-	if hn.Hash == (common.Hash{}) {
+	if hn.Hash == (libcommon.Hash{}) {
 		return rlp.Encode(w, hn.Number)
 	}
 	if hn.Number != 0 {
@@ -319,7 +253,7 @@ func (nbp NewBlockPacket) EncodeRLP(w io.Writer) error {
 	encodingSize++
 	blockLen := nbp.Block.EncodingSize()
 	if blockLen >= 56 {
-		encodingSize += (bits.Len(uint(blockLen)) + 7) / 8
+		encodingSize += libcommon.BitLenToByteLen(bits.Len(uint(blockLen)))
 	}
 	encodingSize += blockLen
 	// size of TD
@@ -328,7 +262,7 @@ func (nbp NewBlockPacket) EncodeRLP(w io.Writer) error {
 	if nbp.TD != nil {
 		tdBitLen = nbp.TD.BitLen()
 		if tdBitLen >= 8 {
-			tdLen = (tdBitLen + 7) / 8
+			tdLen = libcommon.BitLenToByteLen(tdBitLen)
 		}
 	}
 	encodingSize += tdLen
@@ -385,19 +319,11 @@ func (nbp *NewBlockPacket) DecodeRLP(s *rlp.Stream) error {
 
 // SanityCheck verifies that the values are reasonable, as a DoS protection
 func (request *NewBlockPacket) SanityCheck() error {
-	if err := request.Block.SanityCheck(); err != nil {
-		return err
-	}
-	//TD at mainnet block #7753254 is 76 bits. If it becomes 100 million times
-	// larger, it will still fit within 100 bits
-	if tdLen := request.TD.BitLen(); tdLen > 100 {
-		return fmt.Errorf("too large block TD: bitlen %d", tdLen)
-	}
-	return nil
+	return request.Block.SanityCheck()
 }
 
 // GetBlockBodiesPacket represents a block body query.
-type GetBlockBodiesPacket []common.Hash
+type GetBlockBodiesPacket []libcommon.Hash
 
 // GetBlockBodiesPacket represents a block body query over eth/66.
 type GetBlockBodiesPacket66 struct {
@@ -406,10 +332,10 @@ type GetBlockBodiesPacket66 struct {
 }
 
 // BlockBodiesPacket is the network packet for block content distribution.
-type BlockBodiesPacket []*BlockBody
+type BlockBodiesPacket []*types.Body
 
 // BlockRawBodiesPacket is the network packet for block content distribution.
-type BlockRawBodiesPacket []*BlockRawBody
+type BlockRawBodiesPacket []*types.RawBody
 
 // BlockBodiesPacket is the network packet for block content distribution over eth/66.
 type BlockBodiesPacket66 struct {
@@ -434,284 +360,22 @@ type BlockBodiesRLPPacket66 struct {
 	BlockBodiesRLPPacket
 }
 
-// BlockBody represents the data content of a single block.
-type BlockBody struct {
-	Transactions []types.Transaction // Transactions contained within a block
-	Uncles       []*types.Header     // Uncles contained within a block
-}
-
-// BlockRawBody represents the data content of a single block.
-type BlockRawBody struct {
-	Transactions [][]byte        // Transactions contained within a block
-	Uncles       []*types.Header // Uncles contained within a block
-}
-
-func (bb BlockBody) EncodeRLP(w io.Writer) error {
-	encodingSize := 0
-	// size of Transactions
-	encodingSize++
-	var txsLen int
-	for _, tx := range bb.Transactions {
-		txsLen++
-		var txLen int
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			txLen = t.EncodingSize()
-		case *types.AccessListTx:
-			txLen = t.EncodingSize()
-		case *types.DynamicFeeTransaction:
-			txLen = t.EncodingSize()
-		}
-		if txLen >= 56 {
-			txsLen += (bits.Len(uint(txLen)) + 7) / 8
-		}
-		txsLen += txLen
-	}
-	if txsLen >= 56 {
-		encodingSize += (bits.Len(uint(txsLen)) + 7) / 8
-	}
-	encodingSize += txsLen
-	// size of Uncles
-	encodingSize++
-	var unclesLen int
-	for _, uncle := range bb.Uncles {
-		unclesLen++
-		uncleLen := uncle.EncodingSize()
-		if uncleLen >= 56 {
-			unclesLen += (bits.Len(uint(uncleLen)) + 7) / 8
-		}
-		unclesLen += uncleLen
-	}
-	if unclesLen >= 56 {
-		encodingSize += (bits.Len(uint(unclesLen)) + 7) / 8
-	}
-	encodingSize += unclesLen
-	var b [33]byte
-	// prefix
-	if err := types.EncodeStructSizePrefix(encodingSize, w, b[:]); err != nil {
-		return err
-	}
-	// encode Transactions
-	if err := types.EncodeStructSizePrefix(txsLen, w, b[:]); err != nil {
-		return err
-	}
-	for _, tx := range bb.Transactions {
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.AccessListTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.DynamicFeeTransaction:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		}
-	}
-	// encode Uncles
-	if err := types.EncodeStructSizePrefix(unclesLen, w, b[:]); err != nil {
-		return err
-	}
-	for _, uncle := range bb.Uncles {
-		if err := uncle.EncodeRLP(w); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (bb *BlockBody) DecodeRLP(s *rlp.Stream) error {
-	_, err := s.List()
-	if err != nil {
-		return err
-	}
-	// decode Transactions
-	if _, err = s.List(); err != nil {
-		return err
-	}
-	var tx types.Transaction
-	for tx, err = types.DecodeTransaction(s); err == nil; tx, err = types.DecodeTransaction(s) {
-		bb.Transactions = append(bb.Transactions, tx)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	// end of Transactions
-	if err = s.ListEnd(); err != nil {
-		return err
-	}
-	// decode Uncles
-	if _, err = s.List(); err != nil {
-		return err
-	}
-	for err == nil {
-		var uncle types.Header
-		if err = uncle.DecodeRLP(s); err != nil {
-			break
-		}
-		bb.Uncles = append(bb.Uncles, &uncle)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	// end of Uncles
-	if err = s.ListEnd(); err != nil {
-		return err
-	}
-	return s.ListEnd()
-}
-
-// Unpack retrieves the transactions and uncles from the range packet and returns
+// Unpack retrieves the transactions, uncles, and withdrawals from the range packet and returns
 // them in a split flat format that's more consistent with the internal data structures.
-func (p *BlockBodiesPacket) Unpack() ([][]types.Transaction, [][]*types.Header) {
+func (p *BlockRawBodiesPacket) Unpack() ([][][]byte, [][]*types.Header, []types.Withdrawals) {
 	var (
-		txset    = make([][]types.Transaction, len(*p))
-		uncleset = make([][]*types.Header, len(*p))
+		txSet         = make([][][]byte, len(*p))
+		uncleSet      = make([][]*types.Header, len(*p))
+		withdrawalSet = make([]types.Withdrawals, len(*p))
 	)
 	for i, body := range *p {
-		txset[i], uncleset[i] = body.Transactions, body.Uncles
+		txSet[i], uncleSet[i], withdrawalSet[i] = body.Transactions, body.Uncles, body.Withdrawals
 	}
-	return txset, uncleset
-}
-
-func (rb BlockRawBody) EncodeRLP(w io.Writer) error {
-	encodingSize := 0
-	// size of Transactions
-	encodingSize++
-	var txsLen int
-	for _, tx := range rb.Transactions {
-		txsLen++
-		var txLen = len(tx)
-		if txLen >= 56 {
-			txsLen += (bits.Len(uint(txLen)) + 7) / 8
-		}
-		txsLen += txLen
-	}
-	if txsLen >= 56 {
-		encodingSize += (bits.Len(uint(txsLen)) + 7) / 8
-	}
-	encodingSize += txsLen
-	// size of Uncles
-	encodingSize++
-	var unclesLen int
-	for _, uncle := range rb.Uncles {
-		unclesLen++
-		uncleLen := uncle.EncodingSize()
-		if uncleLen >= 56 {
-			unclesLen += (bits.Len(uint(uncleLen)) + 7) / 8
-		}
-		unclesLen += uncleLen
-	}
-	if unclesLen >= 56 {
-		encodingSize += (bits.Len(uint(unclesLen)) + 7) / 8
-	}
-	encodingSize += unclesLen
-	var b [33]byte
-	// prefix
-	if err := types.EncodeStructSizePrefix(encodingSize, w, b[:]); err != nil {
-		return err
-	}
-	// encode Transactions
-	if err := types.EncodeStructSizePrefix(txsLen, w, b[:]); err != nil {
-		return err
-	}
-	for _, tx := range rb.Transactions {
-		if _, err := w.Write(tx); err != nil {
-			return err
-		}
-	}
-	// encode Uncles
-	if err := types.EncodeStructSizePrefix(unclesLen, w, b[:]); err != nil {
-		return err
-	}
-	for _, uncle := range rb.Uncles {
-		if err := uncle.EncodeRLP(w); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (rb *BlockRawBody) DecodeRLP(s *rlp.Stream) error {
-	_, err := s.List()
-	if err != nil {
-		return err
-	}
-	// decode Transactions
-	if _, err = s.List(); err != nil {
-		return err
-	}
-	var tx []byte
-	for tx, err = s.Raw(); err == nil; tx, err = s.Raw() {
-		if tx == nil {
-			fmt.Printf("BlockRawBody.DecodeRLP tx nil\n")
-		}
-		rb.Transactions = append(rb.Transactions, tx)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	// end of Transactions
-	if err = s.ListEnd(); err != nil {
-		return err
-	}
-	// decode Uncles
-	if _, err = s.List(); err != nil {
-		return err
-	}
-	for err == nil {
-		var uncle types.Header
-		if err = uncle.DecodeRLP(s); err != nil {
-			break
-		}
-		rb.Uncles = append(rb.Uncles, &uncle)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	// end of Uncles
-	if err = s.ListEnd(); err != nil {
-		return err
-	}
-	return s.ListEnd()
-}
-
-// Unpack retrieves the transactions and uncles from the range packet and returns
-// them in a split flat format that's more consistent with the internal data structures.
-func (p *BlockRawBodiesPacket) Unpack() ([][][]byte, [][]*types.Header) {
-	var (
-		txset    = make([][][]byte, len(*p))
-		uncleset = make([][]*types.Header, len(*p))
-	)
-	for i, body := range *p {
-		txset[i], uncleset[i] = body.Transactions, body.Uncles
-	}
-	return txset, uncleset
-}
-
-// GetNodeDataPacket represents a trie node data query.
-type GetNodeDataPacket []common.Hash
-
-// GetNodeDataPacket represents a trie node data query over eth/66.
-type GetNodeDataPacket66 struct {
-	RequestId uint64
-	GetNodeDataPacket
-}
-
-// NodeDataPacket is the network packet for trie node data distribution.
-type NodeDataPacket [][]byte
-
-// NodeDataPacket is the network packet for trie node data distribution over eth/66.
-type NodeDataPacket66 struct {
-	RequestId uint64
-	NodeDataPacket
+	return txSet, uncleSet, withdrawalSet
 }
 
 // GetReceiptsPacket represents a block receipts query.
-type GetReceiptsPacket []common.Hash
+type GetReceiptsPacket []libcommon.Hash
 
 // GetReceiptsPacket represents a block receipts query over eth/66.
 type GetReceiptsPacket66 struct {
@@ -737,205 +401,11 @@ type ReceiptsRLPPacket66 struct {
 	ReceiptsRLPPacket
 }
 
-// NewPooledTransactionHashesPacket represents a transaction announcement packet.
-type NewPooledTransactionHashesPacket []common.Hash
-
-// GetPooledTransactionsPacket represents a transaction query.
-type GetPooledTransactionsPacket []common.Hash
-
-type GetPooledTransactionsPacket66 struct {
-	RequestId uint64
-	GetPooledTransactionsPacket
-}
-
-// PooledTransactionsPacket is the network packet for transaction distribution.
-type PooledTransactionsPacket []types.Transaction
-
-func (ptp PooledTransactionsPacket) EncodeRLP(w io.Writer) error {
-	encodingSize := 0
-	// size of Transactions
-	encodingSize++
-	var txsLen int
-	for _, tx := range ptp {
-		txsLen++
-		var txLen int
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			txLen = t.EncodingSize()
-		case *types.AccessListTx:
-			txLen = t.EncodingSize()
-		case *types.DynamicFeeTransaction:
-			txLen = t.EncodingSize()
-		}
-		if txLen >= 56 {
-			txsLen += (bits.Len(uint(txLen)) + 7) / 8
-		}
-		txsLen += txLen
-	}
-	if txsLen >= 56 {
-		encodingSize += (bits.Len(uint(txsLen)) + 7) / 8
-	}
-	encodingSize += txsLen
-	// encode Transactions
-	var b [33]byte
-	if err := types.EncodeStructSizePrefix(encodingSize, w, b[:]); err != nil {
-		return err
-	}
-	for _, tx := range ptp {
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.AccessListTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.DynamicFeeTransaction:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (ptp *PooledTransactionsPacket) DecodeRLP(s *rlp.Stream) error {
-	_, err := s.List()
-	if err != nil {
-		return err
-	}
-	var tx types.Transaction
-	for tx, err = types.DecodeTransaction(s); err == nil; tx, err = types.DecodeTransaction(s) {
-		*ptp = append(*ptp, tx)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	return s.ListEnd()
-}
-
-// PooledTransactionsPacket is the network packet for transaction distribution over eth/66.
-type PooledTransactionsPacket66 struct {
-	RequestId uint64
-	PooledTransactionsPacket
-}
-
-func (ptp66 PooledTransactionsPacket66) EncodeRLP(w io.Writer) error {
-	encodingSize := 0
-	// Size of RequestID
-	encodingSize++
-	var requestIdLen int
-	if ptp66.RequestId >= 128 {
-		requestIdLen = (bits.Len64(ptp66.RequestId) + 7) / 8
-	}
-	encodingSize += requestIdLen
-	// size of Transactions
-	encodingSize++
-	var txsLen int
-	for _, tx := range ptp66.PooledTransactionsPacket {
-		txsLen++
-		var txLen int
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			txLen = t.EncodingSize()
-		case *types.AccessListTx:
-			txLen = t.EncodingSize()
-		case *types.DynamicFeeTransaction:
-			txLen = t.EncodingSize()
-		}
-		if txLen >= 56 {
-			txsLen += (bits.Len(uint(txLen)) + 7) / 8
-		}
-		txsLen += txLen
-	}
-	if txsLen >= 56 {
-		encodingSize += (bits.Len(uint(txsLen)) + 7) / 8
-	}
-	encodingSize += txsLen
-	var b [33]byte
-	// prefix
-	if err := types.EncodeStructSizePrefix(encodingSize, w, b[:]); err != nil {
-		return err
-	}
-	// encode RequestId
-	if ptp66.RequestId > 0 && ptp66.RequestId < 128 {
-		b[0] = byte(ptp66.RequestId)
-		if _, err := w.Write(b[:1]); err != nil {
-			return err
-		}
-	} else {
-		binary.BigEndian.PutUint64(b[1:], ptp66.RequestId)
-		b[8-requestIdLen] = 128 + byte(requestIdLen)
-		if _, err := w.Write(b[8-requestIdLen : 9]); err != nil {
-			return err
-		}
-	}
-	// encode Transactions
-	if err := types.EncodeStructSizePrefix(txsLen, w, b[:]); err != nil {
-		return err
-	}
-	for _, tx := range ptp66.PooledTransactionsPacket {
-		switch t := tx.(type) {
-		case *types.LegacyTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.AccessListTx:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		case *types.DynamicFeeTransaction:
-			if err := t.EncodeRLP(w); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (ptp66 *PooledTransactionsPacket66) DecodeRLP(s *rlp.Stream) error {
-	_, err := s.List()
-	if err != nil {
-		return err
-	}
-	if ptp66.RequestId, err = s.Uint(); err != nil {
-		return fmt.Errorf("read RequestId: %w", err)
-	}
-	if _, err = s.List(); err != nil {
-		return err
-	}
-	var tx types.Transaction
-	for tx, err = types.DecodeTransaction(s); err == nil; tx, err = types.DecodeTransaction(s) {
-		ptp66.PooledTransactionsPacket = append(ptp66.PooledTransactionsPacket, tx)
-	}
-	if !errors.Is(err, rlp.EOL) {
-		return err
-	}
-	if err = s.ListEnd(); err != nil {
-		return err
-	}
-	return s.ListEnd()
-}
-
-// PooledTransactionsPacket is the network packet for transaction distribution, used
-// in the cases we already have them in rlp-encoded form
-type PooledTransactionsRLPPacket []rlp.RawValue
-
-// PooledTransactionsRLPPacket66 is the eth/66 form of PooledTransactionsRLPPacket
-type PooledTransactionsRLPPacket66 struct {
-	RequestId uint64
-	PooledTransactionsRLPPacket
-}
-
 func (*StatusPacket) Name() string { return "Status" }
 func (*StatusPacket) Kind() byte   { return StatusMsg }
 
 func (*NewBlockHashesPacket) Name() string { return "NewBlockHashes" }
 func (*NewBlockHashesPacket) Kind() byte   { return NewBlockHashesMsg }
-
-func (*TransactionsPacket) Name() string { return "Transactions" }
-func (*TransactionsPacket) Kind() byte   { return TransactionsMsg }
 
 func (*GetBlockHeadersPacket) Name() string { return "GetBlockHeaders" }
 func (*GetBlockHeadersPacket) Kind() byte   { return GetBlockHeadersMsg }
@@ -952,23 +422,8 @@ func (*BlockBodiesPacket) Kind() byte   { return BlockBodiesMsg }
 func (*NewBlockPacket) Name() string { return "NewBlock" }
 func (*NewBlockPacket) Kind() byte   { return NewBlockMsg }
 
-func (*GetNodeDataPacket) Name() string { return "GetNodeData" }
-func (*GetNodeDataPacket) Kind() byte   { return GetNodeDataMsg }
-
-func (*NodeDataPacket) Name() string { return "NodeData" }
-func (*NodeDataPacket) Kind() byte   { return NodeDataMsg }
-
 func (*GetReceiptsPacket) Name() string { return "GetReceipts" }
 func (*GetReceiptsPacket) Kind() byte   { return GetReceiptsMsg }
 
 func (*ReceiptsPacket) Name() string { return "Receipts" }
 func (*ReceiptsPacket) Kind() byte   { return ReceiptsMsg }
-
-func (*NewPooledTransactionHashesPacket) Name() string { return "NewPooledTransactionHashes" }
-func (*NewPooledTransactionHashesPacket) Kind() byte   { return NewPooledTransactionHashesMsg }
-
-func (*GetPooledTransactionsPacket) Name() string { return "GetPooledTransactions" }
-func (*GetPooledTransactionsPacket) Kind() byte   { return GetPooledTransactionsMsg }
-
-func (*PooledTransactionsPacket) Name() string { return "PooledTransactions" }
-func (*PooledTransactionsPacket) Kind() byte   { return PooledTransactionsMsg }

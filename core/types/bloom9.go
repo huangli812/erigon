@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ledgerwatch/erigon/common/hexutil"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
+
 	"github.com/ledgerwatch/erigon/crypto"
+	"github.com/ledgerwatch/erigon/crypto/cryptopool"
 )
 
 type bytesBacked interface {
@@ -92,12 +94,12 @@ func (b Bloom) Test(topic []byte) bool {
 
 // MarshalText encodes b as a hex string with 0x prefix.
 func (b Bloom) MarshalText() ([]byte, error) {
-	return hexutil.Bytes(b[:]).MarshalText()
+	return hexutility.Bytes(b[:]).MarshalText()
 }
 
 // UnmarshalText b as a hex string with 0x prefix.
 func (b *Bloom) UnmarshalText(input []byte) error {
-	return hexutil.UnmarshalFixedText("Bloom", input, b[:])
+	return hexutility.UnmarshalFixedText("Bloom", input, b[:])
 }
 
 func CreateBloom(receipts Receipts) Bloom {
@@ -136,11 +138,10 @@ func Bloom9(data []byte) []byte {
 
 // bloomValues returns the bytes (index-value pairs) to set for the given data
 func bloomValues(data []byte, hashbuf []byte) (uint, byte, uint, byte, uint, byte) {
-	sha := hasherPool.Get().(crypto.KeccakState)
-	sha.Reset()
+	sha := crypto.NewKeccakState()
 	sha.Write(data)   //nolint:errcheck
 	sha.Read(hashbuf) //nolint:errcheck
-	hasherPool.Put(sha)
+	cryptopool.ReturnToPoolKeccak256(sha)
 	// The actual bits to flip
 	v1 := byte(1 << (hashbuf[1] & 0x7))
 	v2 := byte(1 << (hashbuf[3] & 0x7))

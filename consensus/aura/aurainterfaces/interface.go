@@ -2,12 +2,13 @@ package aurainterfaces
 
 import (
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon/consensus"
 )
 
 // see openethereum/crates/ethcore/res/contracts/block_reward.json
 type BlockRewardABI interface {
-	Reward(benefactors []common.Address, kind []RewardKind) ([]common.Address, []*uint256.Int, error)
+	Reward(benefactors []libcommon.Address, kind []consensus.RewardKind) ([]libcommon.Address, []*uint256.Int, error)
 }
 
 type abiDecoder func([]byte, interface{}) error
@@ -15,24 +16,8 @@ type abiDecoder func([]byte, interface{}) error
 // see openethereum/crates/ethcore/res/contracts/validator_set.json
 type ValidatorSetABI interface {
 	GetValidators() ([]byte, abiDecoder)
-	ShouldValidatorReport(ourAddr, maliciousValidatorAddress common.Address, blockNum uint64) ([]byte, abiDecoder)
+	ShouldValidatorReport(ourAddr, maliciousValidatorAddress libcommon.Address, blockNum uint64) ([]byte, abiDecoder)
 }
-
-// RewardKind - The kind of block reward.
-// Depending on the consensus engine the allocated block reward might have
-// different semantics which could lead e.g. to different reward values.
-type RewardKind uint16
-
-const (
-	// RewardAuthor - attributed to the block author.
-	RewardAuthor RewardKind = 0
-	// RewardEmptyStep - attributed to the author(s) of empty step(s) included in the block (AuthorityRound engine).
-	RewardEmptyStep RewardKind = 1
-	// RewardExternal - attributed by an external protocol (e.g. block reward contract).
-	RewardExternal RewardKind = 2
-	// RewardUncle - attributed to the block uncle(s) with given difference.
-	RewardUncle RewardKind = 3
-)
 
 type SealKind [][]byte
 
@@ -45,7 +30,7 @@ type SealRegular SealKind
 // Engine does not generate seal for this block right now.
 type None SealKind
 
-/// The type of sealing the engine is currently able to perform.
+// / The type of sealing the engine is currently able to perform.
 type SealingState uint8
 
 const (

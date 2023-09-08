@@ -20,11 +20,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"io/ioutil"
 	"reflect"
 	"testing"
 
-	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon-lib/common/length"
+
 	"github.com/ledgerwatch/erigon/common/hexutil"
 )
 
@@ -746,7 +746,7 @@ func benchmarkHashimotoFullMmap(b *testing.B, name string, lock bool) {
 		tmpdir := b.TempDir()
 		d := &dataset{epoch: 0}
 		d.generate(tmpdir, 1, lock, false)
-		var hash [common.HashLength]byte
+		var hash [length.Hash]byte
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			binary.PutVarint(hash[:], int64(i))
@@ -770,7 +770,7 @@ func BenchmarkSeedHash(b *testing.B) {
 		}
 	}
 
-	_, err := io.Copy(ioutil.Discard, bytes.NewBuffer(res))
+	_, err := io.Copy(io.Discard, bytes.NewBuffer(res))
 	if err != nil {
 		b.Error(err)
 	}
@@ -785,7 +785,7 @@ func BenchmarkSeedHashOld(b *testing.B) {
 		}
 	}
 
-	_, err := io.Copy(ioutil.Discard, bytes.NewBuffer(res))
+	_, err := io.Copy(io.Discard, bytes.NewBuffer(res))
 	if err != nil {
 		b.Error(err)
 	}

@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/length"
+
 	"github.com/ledgerwatch/erigon/consensus"
 	"github.com/ledgerwatch/erigon/consensus/misc"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/params"
-	"github.com/ledgerwatch/log/v3"
 )
 
 // verifyHeader checks whether a header conforms to the consensus rules.The
@@ -33,7 +34,7 @@ func (c *Clique) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 
 	// Checkpoint blocks need to enforce zero beneficiary
 	checkpoint := (number % c.config.Epoch) == 0
-	if checkpoint && header.Coinbase != (common.Address{}) {
+	if checkpoint && header.Coinbase != (libcommon.Address{}) {
 		return errInvalidCheckpointBeneficiary
 	}
 
@@ -58,11 +59,11 @@ func (c *Clique) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 	if !checkpoint && signersBytes != 0 {
 		return errExtraSigners
 	}
-	if checkpoint && signersBytes%common.AddressLength != 0 {
+	if checkpoint && signersBytes%length.Addr != 0 {
 		return errInvalidCheckpointSigners
 	}
 	// Ensure that the mix digest is zero as we don't have fork protection currently
-	if header.MixDigest != (common.Hash{}) {
+	if header.MixDigest != (libcommon.Hash{}) {
 		return errInvalidMixDigest
 	}
 	// Ensure that the block doesn't contain any uncles which are meaningless in PoA
@@ -76,9 +77,8 @@ func (c *Clique) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 		}
 	}
 
-	// If all checks passed, validate any special fields for hard forks
-	if err := misc.VerifyForkHashes(c.chainConfig, header, false); err != nil {
-		return err
+	if header.WithdrawalsHash != nil {
+		return consensus.ErrUnexpectedWithdrawals
 	}
 
 	// All basic checks passed, verify cascading fields
@@ -115,18 +115,15 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 		if header.BaseFee != nil {
 			return fmt.Errorf("invalid baseFee before fork: have %d, want <nil>", header.BaseFee)
 		}
-		// Verify that the gas limit remains within allowed bounds
-		diff := int64(parent.GasLimit) - int64(header.GasLimit)
-		if diff < 0 {
-			diff *= -1
+		if err := misc.VerifyGaslimit(parent.GasLimit, header.GasLimit); err != nil {
+			return err
 		}
-		limit := parent.GasLimit / params.GasLimitBoundDivisor
-
-		if uint64(diff) >= limit || header.GasLimit < params.MinGasLimit {
-			return fmt.Errorf("invalid gas limit: have %d, want %d += %d", header.GasLimit, parent.GasLimit, limit)
-		}
-	} else if err := misc.VerifyEip1559Header(chain.Config(), parent, header); err != nil {
+	} else if err := misc.VerifyEip1559Header(chain.Config(), parent, header, false /*skipGasLimit*/); err != nil {
 		// Verify the header's EIP-1559 attributes.
+		return err
+	}
+
+	if err := misc.VerifyAbsenceOfCancunHeaderFields(header); err != nil {
 		return err
 	}
 
@@ -138,9 +135,9 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 
 	// If the block is a checkpoint block, verify the signer list
 	if number%c.config.Epoch == 0 {
-		signers := make([]byte, len(snap.Signers)*common.AddressLength)
+		signers := make([]byte, len(snap.Signers)*length.Addr)
 		for i, signer := range snap.GetSigners() {
-			copy(signers[i*common.AddressLength:], signer[:])
+			copy(signers[i*length.Addr:], signer[:])
 		}
 
 		extraSuffix := len(header.Extra) - ExtraSeal
@@ -153,7 +150,7 @@ func (c *Clique) verifyCascadingFields(chain consensus.ChainHeaderReader, header
 	return c.verifySeal(chain, header, snap)
 }
 
-func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash common.Hash, parents []*types.Header) (*Snapshot, error) {
+func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash libcommon.Hash, parents []*types.Header) (*Snapshot, error) {
 	// Search for a snapshot in memory or on disk for checkpoints
 	var (
 		headers []*types.Header
@@ -162,13 +159,13 @@ func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 	for snap == nil {
 		// If an in-memory snapshot was found, use that
 		if s, ok := c.recents.Get(hash); ok {
-			snap = s.(*Snapshot)
+			snap = s
 			break
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if number%c.snapshotConfig.CheckpointInterval == 0 {
-			if s, err := loadSnapshot(c.config, c.db, number, hash); err == nil {
-				log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
+			if s, err := loadSnapshot(c.config, c.DB, number, hash); err == nil {
+				c.logger.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
 				snap = s
 				break
 			}
@@ -182,15 +179,15 @@ func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 			if checkpoint != nil {
 				hash := checkpoint.Hash()
 
-				signers := make([]common.Address, (len(checkpoint.Extra)-ExtraVanity-ExtraSeal)/common.AddressLength)
+				signers := make([]libcommon.Address, (len(checkpoint.Extra)-ExtraVanity-ExtraSeal)/length.Addr)
 				for i := 0; i < len(signers); i++ {
-					copy(signers[i][:], checkpoint.Extra[ExtraVanity+i*common.AddressLength:])
+					copy(signers[i][:], checkpoint.Extra[ExtraVanity+i*length.Addr:])
 				}
 				snap = newSnapshot(c.config, number, hash, signers)
-				if err := snap.store(c.db); err != nil {
+				if err := snap.store(c.DB); err != nil {
 					return nil, err
 				}
-				log.Info("[Clique] Stored checkpoint snapshot to disk", "number", number, "hash", hash)
+				c.logger.Info("[Clique] Stored checkpoint snapshot to disk", "number", number, "hash", hash)
 				break
 			}
 		}
@@ -217,7 +214,7 @@ func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 	for i := 0; i < len(headers)/2; i++ {
 		headers[i], headers[len(headers)-1-i] = headers[len(headers)-1-i], headers[i]
 	}
-	snap, err := snap.apply(c.signatures, headers...)
+	snap, err := snap.apply(c.signatures, c.logger, headers...)
 	if err != nil {
 		return nil, err
 	}
@@ -225,10 +222,10 @@ func (c *Clique) Snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 
 	// If we've generated a new checkpoint snapshot, save to disk
 	if snap.Number%c.snapshotConfig.CheckpointInterval == 0 && len(headers) > 0 {
-		if err = snap.store(c.db); err != nil {
+		if err = snap.store(c.DB); err != nil {
 			return nil, err
 		}
-		log.Trace("Stored voting snapshot to disk", "number", snap.Number, "hash", snap.Hash)
+		c.logger.Trace("Stored voting snapshot to disk", "number", snap.Number, "hash", snap.Hash)
 	}
 	return snap, err
 }

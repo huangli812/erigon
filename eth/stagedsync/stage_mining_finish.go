@@ -3,39 +3,47 @@ package stagedsync
 import (
 	"fmt"
 
+	"github.com/ledgerwatch/erigon-lib/chain"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/consensus"
-	"github.com/ledgerwatch/erigon/core/rawdb"
-	"github.com/ledgerwatch/erigon/core/types"
-	"github.com/ledgerwatch/erigon/params"
+	"github.com/ledgerwatch/erigon/turbo/builder"
+	"github.com/ledgerwatch/erigon/turbo/services"
 	"github.com/ledgerwatch/log/v3"
+
+	"github.com/ledgerwatch/erigon/consensus"
+	"github.com/ledgerwatch/erigon/core/types"
 )
 
 type MiningFinishCfg struct {
-	db          kv.RwDB
-	chainConfig params.ChainConfig
-	engine      consensus.Engine
-	sealCancel  <-chan struct{}
-	miningState MiningState
+	db                    kv.RwDB
+	chainConfig           chain.Config
+	engine                consensus.Engine
+	sealCancel            chan struct{}
+	miningState           MiningState
+	blockReader           services.FullBlockReader
+	latestBlockBuiltStore *builder.LatestBlockBuiltStore
 }
 
 func StageMiningFinishCfg(
 	db kv.RwDB,
-	chainConfig params.ChainConfig,
+	chainConfig chain.Config,
 	engine consensus.Engine,
 	miningState MiningState,
-	sealCancel <-chan struct{},
+	sealCancel chan struct{},
+	blockReader services.FullBlockReader,
+	latestBlockBuiltStore *builder.LatestBlockBuiltStore,
 ) MiningFinishCfg {
 	return MiningFinishCfg{
-		db:          db,
-		chainConfig: chainConfig,
-		engine:      engine,
-		miningState: miningState,
-		sealCancel:  sealCancel,
+		db:                    db,
+		chainConfig:           chainConfig,
+		engine:                engine,
+		miningState:           miningState,
+		sealCancel:            sealCancel,
+		blockReader:           blockReader,
+		latestBlockBuiltStore: latestBlockBuiltStore,
 	}
 }
 
-func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit <-chan struct{}) error {
+func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit <-chan struct{}, logger log.Logger) error {
 	logPrefix := s.LogPrefix()
 	current := cfg.miningState.MiningBlock
 
@@ -44,7 +52,8 @@ func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit
 	//	continue
 	//}
 
-	block := types.NewBlock(current.Header, current.Txs, current.Uncles, current.Receipts)
+	block := types.NewBlock(current.Header, current.Txs, current.Uncles, current.Receipts, current.Withdrawals)
+	blockWithReceipts := &types.BlockWithReceipts{Block: block, Receipts: current.Receipts}
 	*current = MiningBlock{} // hack to clean global data
 
 	//sealHash := engine.SealHash(block.Header())
@@ -54,38 +63,41 @@ func SpawnMiningFinishStage(s *StageState, tx kv.RwTx, cfg MiningFinishCfg, quit
 	//	return nil
 	//}
 	//prev = sealHash
-
-	// If we are on POS, we will send the result on the POS channel
-	isTrans, err := rawdb.Transitioned(tx, block.Header().Number.Uint64(), cfg.chainConfig.TerminalTotalDifficulty)
-	if err != nil {
-		return err
-	}
-
-	if isTrans {
-		cfg.miningState.MiningResultPOSCh <- block
+	cfg.latestBlockBuiltStore.AddBlockBuilt(block)
+	if cfg.miningState.MiningResultPOSCh != nil {
+		cfg.miningState.MiningResultPOSCh <- blockWithReceipts
 		return nil
 	}
+
 	// Tests may set pre-calculated nonce
 	if block.NonceU64() != 0 {
-		cfg.miningState.MiningResultCh <- block
-		return nil
+		// Note: To propose a new signer for Clique consensus, the block nonce should be set to 0xFFFFFFFFFFFFFFFF.
+		if cfg.engine.Type() != chain.CliqueConsensus {
+			cfg.miningState.MiningResultCh <- block
+			return nil
+		}
 	}
 
 	cfg.miningState.PendingResultCh <- block
 
 	if block.Transactions().Len() > 0 {
-		log.Info(fmt.Sprintf("[%s] block ready for seal", logPrefix),
-			"blocn_num", block.NumberU64(),
+		logger.Info(fmt.Sprintf("[%s] block ready for seal", logPrefix),
+			"block_num", block.NumberU64(),
 			"transactions", block.Transactions().Len(),
 			"gas_used", block.GasUsed(),
 			"gas_limit", block.GasLimit(),
 			"difficulty", block.Difficulty(),
 		)
 	}
-
-	chain := ChainReader{Cfg: cfg.chainConfig, Db: tx}
+	// interrupt aborts the in-flight sealing task.
+	select {
+	case cfg.sealCancel <- struct{}{}:
+	default:
+		logger.Trace("None in-flight sealing task.")
+	}
+	chain := ChainReader{Cfg: cfg.chainConfig, Db: tx, BlockReader: cfg.blockReader}
 	if err := cfg.engine.Seal(chain, block, cfg.miningState.MiningResultCh, cfg.sealCancel); err != nil {
-		log.Warn("Block sealing failed", "err", err)
+		logger.Warn("Block sealing failed", "err", err)
 	}
 
 	return nil

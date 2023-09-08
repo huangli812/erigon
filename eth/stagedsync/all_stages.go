@@ -1,15 +1,26 @@
 package stagedsync
 
 import (
-	"github.com/VictoriaMetrics/metrics"
+	"fmt"
+
+	metrics2 "github.com/VictoriaMetrics/metrics"
+	"github.com/huandu/xstrings"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
+	"github.com/ledgerwatch/erigon/metrics"
 )
 
-var syncMetrics = map[stages.SyncStage]*metrics.Counter{
-	stages.Headers:   metrics.GetOrCreateCounter(`sync{stage="headers"}`),
-	stages.Execution: metrics.GetOrCreateCounter(`sync{stage="execution"}`),
-	stages.Finish:    metrics.GetOrCreateCounter(`sync{stage="finish"}`),
+var syncMetrics = map[stages.SyncStage]*metrics2.Counter{}
+
+func init() {
+	for _, v := range stages.AllStages {
+		syncMetrics[v] = metrics.GetOrCreateCounter(
+			fmt.Sprintf(
+				`sync{stage="%s"}`,
+				xstrings.ToSnakeCase(string(v)),
+			),
+		)
+	}
 }
 
 // UpdateMetrics - need update metrics manually because current "metrics" package doesn't support labels

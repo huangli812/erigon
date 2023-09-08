@@ -3,12 +3,13 @@ package migrations
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"path/filepath"
 
+	"github.com/ledgerwatch/erigon-lib/common/datadir"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon/core/rawdb"
 	"github.com/ledgerwatch/erigon/eth/stagedsync/stages"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/ugorji/go/codec"
@@ -20,19 +21,20 @@ import (
 //
 // Idempotency is expected
 // Best practices to achieve Idempotency:
-// - in dbutils/bucket.go add suffix for existing bucket variable, create new bucket with same variable name.
-//	Example:
-//		- SyncStageProgress = []byte("SSP1")
-//		+ SyncStageProgressOld1 = []byte("SSP1")
-//		+ SyncStageProgress = []byte("SSP2")
-// - in the beginning of migration: check that old bucket exists, clear new bucket
-// - in the end:drop old bucket (not in defer!).
-// - if you need migrate multiple buckets - create separate migration for each bucket
-// - write test - and check that it's safe to apply same migration twice
+//   - in dbutils/bucket.go add suffix for existing bucket variable, create new bucket with same variable name.
+//     Example:
+//   - SyncStageProgress = []byte("SSP1")
+//   - SyncStageProgressOld1 = []byte("SSP1")
+//   - SyncStageProgress = []byte("SSP2")
+//   - in the beginning of migration: check that old bucket exists, clear new bucket
+//   - in the end:drop old bucket (not in defer!).
+//   - if you need migrate multiple buckets - create separate migration for each bucket
+//   - write test - and check that it's safe to apply same migration twice
 var migrations = map[kv.Label][]Migration{
 	kv.ChainDB: {
 		dbSchemaVersion5,
-		txsBeginEnd,
+		TxsBeginEnd,
+		TxsV3,
 	},
 	kv.TxPoolDB: {},
 	kv.SentryDB: {},
@@ -41,7 +43,7 @@ var migrations = map[kv.Label][]Migration{
 type Callback func(tx kv.RwTx, progress []byte, isDone bool) error
 type Migration struct {
 	Name string
-	Up   func(db kv.RwDB, tmpdir string, progress []byte, BeforeCommit Callback) error
+	Up   func(db kv.RwDB, dirs datadir.Dirs, progress []byte, BeforeCommit Callback, logger log.Logger) error
 }
 
 var (
@@ -119,17 +121,11 @@ func (m *Migrator) PendingMigrations(tx kv.Tx) ([]Migration, error) {
 
 func (m *Migrator) VerifyVersion(db kv.RwDB) error {
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
-		var err error
-		existingVersion, err := tx.GetOne(kv.DatabaseInfo, kv.DBSchemaVersionKey)
+		major, minor, _, ok, err := rawdb.ReadDBSchemaVersion(tx)
 		if err != nil {
 			return fmt.Errorf("reading DB schema version: %w", err)
 		}
-		if len(existingVersion) != 0 && len(existingVersion) != 12 {
-			return fmt.Errorf("incorrect length of DB schema version: %d", len(existingVersion))
-		}
-		if len(existingVersion) == 12 {
-			major := binary.BigEndian.Uint32(existingVersion)
-			minor := binary.BigEndian.Uint32(existingVersion[4:])
+		if ok {
 			if major > kv.DBSchemaVersion.Major {
 				return fmt.Errorf("cannot downgrade major DB version from %d to %d", major, kv.DBSchemaVersion.Major)
 			} else if major == kv.DBSchemaVersion.Major {
@@ -151,10 +147,11 @@ func (m *Migrator) VerifyVersion(db kv.RwDB) error {
 	return nil
 }
 
-func (m *Migrator) Apply(db kv.RwDB, datadir string) error {
+func (m *Migrator) Apply(db kv.RwDB, dataDir string, logger log.Logger) error {
 	if len(m.Migrations) == 0 {
 		return nil
 	}
+	dirs := datadir.New(dataDir)
 
 	var applied map[string][]byte
 	if err := db.View(context.Background(), func(tx kv.Tx) error {
@@ -189,7 +186,7 @@ func (m *Migrator) Apply(db kv.RwDB, datadir string) error {
 
 		callbackCalled := false // commit function must be called if no error, protection against people's mistake
 
-		log.Info("Apply migration", "name", v.Name)
+		logger.Info("Apply migration", "name", v.Name)
 		var progress []byte
 		if err := db.View(context.Background(), func(tx kv.Tx) (err error) {
 			progress, err = tx.GetOne(kv.Migrations, []byte("_progress_"+v.Name))
@@ -198,7 +195,8 @@ func (m *Migrator) Apply(db kv.RwDB, datadir string) error {
 			return fmt.Errorf("migrator.Apply: %w", err)
 		}
 
-		if err := v.Up(db, filepath.Join(datadir, "migrations", v.Name), progress, func(tx kv.RwTx, key []byte, isDone bool) error {
+		dirs.Tmp = filepath.Join(dirs.DataDir, "migrations", v.Name)
+		if err := v.Up(db, dirs, progress, func(tx kv.RwTx, key []byte, isDone bool) error {
 			if !isDone {
 				if key != nil {
 					if err := tx.Put(kv.Migrations, []byte("_progress_"+v.Name), key); err != nil {
@@ -218,35 +216,27 @@ func (m *Migrator) Apply(db kv.RwDB, datadir string) error {
 				return err
 			}
 
-			err = tx.Delete(kv.Migrations, []byte("_progress_"+v.Name), nil)
+			err = tx.Delete(kv.Migrations, []byte("_progress_"+v.Name))
 			if err != nil {
 				return err
 			}
 
 			return nil
-		}); err != nil {
+		}, logger); err != nil {
 			return fmt.Errorf("migrator.Apply.Up: %s, %w", v.Name, err)
 		}
 
 		if !callbackCalled {
 			return fmt.Errorf("%w: %s", ErrMigrationCommitNotCalled, v.Name)
 		}
-		log.Info("Applied migration", "name", v.Name)
+		logger.Info("Applied migration", "name", v.Name)
 	}
-	// Write DB schema version
-	var version [12]byte
-	binary.BigEndian.PutUint32(version[:], kv.DBSchemaVersion.Major)
-	binary.BigEndian.PutUint32(version[4:], kv.DBSchemaVersion.Minor)
-	binary.BigEndian.PutUint32(version[8:], kv.DBSchemaVersion.Patch)
 	if err := db.Update(context.Background(), func(tx kv.RwTx) error {
-		if err := tx.Put(kv.DatabaseInfo, kv.DBSchemaVersionKey, version[:]); err != nil {
-			return fmt.Errorf("writing DB schema version: %w", err)
-		}
-		return nil
+		return rawdb.WriteDBSchemaVersion(tx)
 	}); err != nil {
 		return fmt.Errorf("migrator.Apply: %w", err)
 	}
-	log.Info("Updated DB schema to", "version", fmt.Sprintf("%d.%d.%d", kv.DBSchemaVersion.Major, kv.DBSchemaVersion.Minor, kv.DBSchemaVersion.Patch))
+	logger.Info("Updated DB schema to", "version", fmt.Sprintf("%d.%d.%d", kv.DBSchemaVersion.Major, kv.DBSchemaVersion.Minor, kv.DBSchemaVersion.Patch))
 	return nil
 }
 

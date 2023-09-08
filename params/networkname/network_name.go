@@ -1,19 +1,27 @@
 package networkname
 
 const (
-	MainnetChainName    = "mainnet"
-	SepoliaChainName    = "sepolia"
-	RopstenChainName    = "ropsten"
-	RinkebyChainName    = "rinkeby"
-	GoerliChainName     = "goerli"
-	KilnDevnetChainName = "kiln-devnet"
-	DevChainName        = "dev"
-	ErigonMineName      = "erigonmine"
-	SokolChainName      = "sokol"
-	FermionChainName    = "fermion"
-	BSCChainName        = "bsc"
-	ChapelChainName     = "chapel"
-	RialtoChainName     = "rialto"
-	MumbaiChainName     = "mumbai"
-	BorMainnetChainName = "bor-mainnet"
+	MainnetChainName        = "mainnet"
+	HoleskyChainName        = "holesky"
+	SepoliaChainName        = "sepolia"
+	GoerliChainName         = "goerli"
+	DevChainName            = "dev"
+	MumbaiChainName         = "mumbai"
+	BorMainnetChainName     = "bor-mainnet"
+	BorDevnetChainName      = "bor-devnet"
+	GnosisChainName         = "gnosis"
+	BorE2ETestChain2ValName = "bor-e2e-test-2Val"
+	ChiadoChainName         = "chiado"
 )
+
+var All = []string{
+	MainnetChainName,
+	HoleskyChainName,
+	SepoliaChainName,
+	GoerliChainName,
+	MumbaiChainName,
+	BorMainnetChainName,
+	BorDevnetChainName,
+	GnosisChainName,
+	ChiadoChainName,
+}

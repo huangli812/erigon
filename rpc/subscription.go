@@ -57,10 +57,9 @@ func randomIDGenerator() func() ID {
 	} else {
 		seed = int64(time.Now().Nanosecond())
 	}
-
 	var (
 		mu  sync.Mutex
-		rng = rand.New(rand.NewSource(seed))
+		rng = rand.New(rand.NewSource(seed)) // nolint: gosec
 	)
 	return func() ID {
 		mu.Lock()

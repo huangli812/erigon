@@ -4,18 +4,23 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	common2 "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	mdbx2 "github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon/turbo/backup"
+	"github.com/ledgerwatch/erigon/turbo/debug"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/spf13/cobra"
-	"github.com/torquem-ch/mdbx-go/mdbx"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 )
 
 var stateBuckets = []string{
@@ -30,73 +35,95 @@ var stateBuckets = []string{
 	kv.Code,
 	kv.TrieOfAccounts,
 	kv.TrieOfStorage,
-	kv.AccountsHistory,
-	kv.StorageHistory,
+	kv.E2AccountsHistory,
+	kv.E2StorageHistory,
 	kv.TxLookup,
 	kv.ContractTEVMCode,
+}
+
+var cmdWarmup = &cobra.Command{
+	Use: "warmup",
+	Run: func(cmd *cobra.Command, args []string) {
+		ctx, _ := common2.RootContext()
+		logger := debug.SetupCobra(cmd, "integration")
+		err := doWarmup(ctx, chaindata, bucket, logger)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				logger.Error(err.Error())
+			}
+			return
+		}
+	},
 }
 
 var cmdCompareBucket = &cobra.Command{
 	Use:   "compare_bucket",
 	Short: "compare bucket to the same bucket in '--chaindata.reference'",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		ctx, _ := common2.RootContext()
+		logger := debug.SetupCobra(cmd, "integration")
 		if referenceChaindata == "" {
 			referenceChaindata = chaindata + "-copy"
 		}
 		err := compareBucketBetweenDatabases(ctx, chaindata, referenceChaindata, bucket)
 		if err != nil {
-			log.Error(err.Error())
-			return err
+			if !errors.Is(err, context.Canceled) {
+				logger.Error(err.Error())
+			}
+			return
 		}
-		return nil
 	},
 }
 
 var cmdCompareStates = &cobra.Command{
 	Use:   "compare_states",
 	Short: "compare state buckets to buckets in '--chaindata.reference'",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		ctx, _ := common2.RootContext()
+		logger := debug.SetupCobra(cmd, "integration")
 		if referenceChaindata == "" {
 			referenceChaindata = chaindata + "-copy"
 		}
 		err := compareStates(ctx, chaindata, referenceChaindata)
 		if err != nil {
-			log.Error(err.Error())
-			return err
+			if !errors.Is(err, context.Canceled) {
+				logger.Error(err.Error())
+			}
+			return
 		}
-		return nil
 	},
 }
 
 var cmdMdbxToMdbx = &cobra.Command{
 	Use:   "mdbx_to_mdbx",
 	Short: "copy data from '--chaindata' to '--chaindata.to'",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		ctx, _ := common2.RootContext()
-		logger := log.New()
-		err := mdbxToMdbx(ctx, logger, chaindata, toChaindata)
-		if err != nil {
-			log.Error(err.Error())
-			return err
+		logger := debug.SetupCobra(cmd, "integration")
+		from, to := backup.OpenPair(chaindata, toChaindata, kv.ChainDB, 0, logger)
+		err := backup.Kv2kv(ctx, from, to, nil, backup.ReadAheadThreads, logger)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			if !errors.Is(err, context.Canceled) {
+				logger.Error(err.Error())
+			}
+			return
 		}
-		return nil
 	},
 }
 
 var cmdFToMdbx = &cobra.Command{
 	Use:   "f_to_mdbx",
 	Short: "copy data from '--chaindata' to '--chaindata.to'",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	Run: func(cmd *cobra.Command, args []string) {
 		ctx, _ := common2.RootContext()
-		logger := log.New()
+		logger := debug.SetupCobra(cmd, "integration")
 		err := fToMdbx(ctx, logger, toChaindata)
-		if err != nil {
-			log.Error(err.Error())
-			return err
+		if err != nil && !errors.Is(err, context.Canceled) {
+			if !errors.Is(err, context.Canceled) {
+				logger.Error(err.Error())
+			}
+			return
 		}
-		return nil
 	},
 }
 
@@ -106,6 +133,11 @@ func init() {
 	withBucket(cmdCompareBucket)
 
 	rootCmd.AddCommand(cmdCompareBucket)
+
+	withDataDir(cmdWarmup)
+	withBucket(cmdWarmup)
+
+	rootCmd.AddCommand(cmdWarmup)
 
 	withDataDir(cmdCompareStates)
 	withReferenceChaindata(cmdCompareStates)
@@ -124,6 +156,60 @@ func init() {
 	withBucket(cmdFToMdbx)
 
 	rootCmd.AddCommand(cmdFToMdbx)
+}
+
+func doWarmup(ctx context.Context, chaindata string, bucket string, logger log.Logger) error {
+	const ThreadsLimit = 5_000
+	db := mdbx2.NewMDBX(log.New()).Path(chaindata).RoTxsLimiter(semaphore.NewWeighted(ThreadsLimit)).Readonly().MustOpen()
+	defer db.Close()
+
+	var total uint64
+	db.View(ctx, func(tx kv.Tx) error {
+		c, _ := tx.Cursor(bucket)
+		total, _ = c.Count()
+		return nil
+	})
+	progress := atomic.Int64{}
+
+	logEvery := time.NewTicker(20 * time.Second)
+	defer logEvery.Stop()
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(ThreadsLimit)
+	for i := 0; i < 256; i++ {
+		for j := 0; j < 256; j++ {
+			i := i
+			j := j
+			g.Go(func() error {
+				return db.View(ctx, func(tx kv.Tx) error {
+					it, err := tx.Prefix(bucket, []byte{byte(i), byte(j)})
+					if err != nil {
+						return err
+					}
+					for it.HasNext() {
+						_, v, err := it.Next()
+						if len(v) > 0 {
+							_ = v[len(v)-1]
+						}
+						progress.Add(1)
+						if err != nil {
+							return err
+						}
+
+						select {
+						case <-logEvery.C:
+
+							logger.Info(fmt.Sprintf("Progress: %.2f%%", 100*float64(progress.Load())/float64(total)))
+						default:
+						}
+					}
+					return nil
+				})
+			})
+		}
+	}
+	g.Wait()
+	return nil
 }
 
 func compareStates(ctx context.Context, chaindata string, referenceChaindata string) error {
@@ -328,7 +414,7 @@ MainLoop:
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-commitEvery.C:
-				log.Info("Progress", "bucket", bucket, "key", fmt.Sprintf("%x", k))
+				logger.Info("Progress", "bucket", bucket, "key", fmt.Sprintf("%x", k))
 			}
 		}
 		err = fileScanner.Err()
@@ -341,98 +427,5 @@ MainLoop:
 		return err
 	}
 
-	return nil
-}
-
-func mdbxToMdbx(ctx context.Context, logger log.Logger, from, to string) error {
-	_ = os.RemoveAll(to)
-	src := mdbx2.NewMDBX(logger).Path(from).Flags(func(flags uint) uint { return mdbx.Readonly | mdbx.Accede }).MustOpen()
-	dst := mdbx2.NewMDBX(logger).Path(to).MustOpen()
-	return kv2kv(ctx, src, dst)
-}
-
-func kv2kv(ctx context.Context, src, dst kv.RwDB) error {
-	srcTx, err1 := src.BeginRo(ctx)
-	if err1 != nil {
-		return err1
-	}
-	defer srcTx.Rollback()
-	dstTx, err1 := dst.BeginRw(ctx)
-	if err1 != nil {
-		return err1
-	}
-	defer dstTx.Rollback()
-
-	commitEvery := time.NewTicker(30 * time.Second)
-	defer commitEvery.Stop()
-
-	for name, b := range src.AllBuckets() {
-		if b.IsDeprecated {
-			continue
-		}
-
-		c, err := dstTx.RwCursor(name)
-		if err != nil {
-			return err
-		}
-		srcC, err := srcTx.Cursor(name)
-		if err != nil {
-			return err
-		}
-		casted, isDupsort := c.(kv.RwCursorDupSort)
-
-		for k, v, err := srcC.First(); k != nil; k, v, err = srcC.Next() {
-			if err != nil {
-				return err
-			}
-
-			if isDupsort {
-				if err = casted.AppendDup(k, v); err != nil {
-					panic(err)
-				}
-			} else {
-				if err = c.Append(k, v); err != nil {
-					panic(err)
-				}
-			}
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-commitEvery.C:
-				log.Info("Progress", "bucket", name, "key", fmt.Sprintf("%x", k))
-				if err2 := dstTx.Commit(); err2 != nil {
-					return err2
-				}
-				dstTx, err = dst.BeginRw(ctx)
-				if err != nil {
-					return err
-				}
-				defer dstTx.Rollback()
-				c, err = dstTx.RwCursor(name)
-				if err != nil {
-					return err
-				}
-				casted, isDupsort = c.(kv.RwCursorDupSort)
-			default:
-			}
-		}
-
-		// migrate bucket sequences to native mdbx implementation
-		//currentID, err := srcTx.Sequence(name, 0)
-		//if err != nil {
-		//	return err
-		//}
-		//_, err = dstTx.Sequence(name, currentID)
-		//if err != nil {
-		//	return err
-		//}
-	}
-	err := dstTx.Commit()
-	if err != nil {
-		return err
-	}
-	srcTx.Rollback()
-	log.Info("done")
 	return nil
 }

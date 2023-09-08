@@ -16,6 +16,7 @@ import (
 	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
+
 	"github.com/ledgerwatch/erigon/common"
 )
 
@@ -23,7 +24,7 @@ func IndexStats(chaindata string, indexBucket string, statsFile string) error {
 	db := mdbx.MustOpen(chaindata)
 	startTime := time.Now()
 	lenOfKey := length.Addr
-	if strings.HasPrefix(indexBucket, kv.StorageHistory) {
+	if strings.HasPrefix(indexBucket, kv.E2StorageHistory) {
 		lenOfKey = length.Addr + length.Hash + length.Incarnation
 	}
 
@@ -112,7 +113,7 @@ func IndexStats(chaindata string, indexBucket string, statsFile string) error {
 				Hash         string
 				NumOfIndexes uint64
 			}{
-				Address:      common.BytesToAddress(p).String(),
+				Address:      libcommon.BytesToAddress(p).String(),
 				NumOfIndexes: v,
 				Hash:         common.Bytes2Hex([]byte(hash)),
 			})

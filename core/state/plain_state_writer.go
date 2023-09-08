@@ -4,8 +4,9 @@ import (
 	"encoding/binary"
 
 	"github.com/holiman/uint256"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
-	"github.com/ledgerwatch/erigon/common"
+
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/core/types/accounts"
 	"github.com/ledgerwatch/erigon/turbo/shards"
@@ -16,6 +17,7 @@ var _ WriterWithChangeSets = (*PlainStateWriter)(nil)
 type putDel interface {
 	kv.Putter
 	kv.Deleter
+	IncrementSequence(bucket string, amount uint64) (uint64, error)
 }
 type PlainStateWriter struct {
 	db          putDel
@@ -41,7 +43,8 @@ func (w *PlainStateWriter) SetAccumulator(accumulator *shards.Accumulator) *Plai
 	return w
 }
 
-func (w *PlainStateWriter) UpdateAccountData(address common.Address, original, account *accounts.Account) error {
+func (w *PlainStateWriter) UpdateAccountData(address libcommon.Address, original, account *accounts.Account) error {
+	//fmt.Printf("balance,%x,%d\n", address, &account.Balance)
 	if w.csw != nil {
 		if err := w.csw.UpdateAccountData(address, original, account); err != nil {
 			return err
@@ -52,10 +55,12 @@ func (w *PlainStateWriter) UpdateAccountData(address common.Address, original, a
 	if w.accumulator != nil {
 		w.accumulator.ChangeAccount(address, account.Incarnation, value)
 	}
+
 	return w.db.Put(kv.PlainState, address[:], value)
 }
 
-func (w *PlainStateWriter) UpdateAccountCode(address common.Address, incarnation uint64, codeHash common.Hash, code []byte) error {
+func (w *PlainStateWriter) UpdateAccountCode(address libcommon.Address, incarnation uint64, codeHash libcommon.Hash, code []byte) error {
+	//fmt.Printf("code,%x,%x\n", address, code)
 	if w.csw != nil {
 		if err := w.csw.UpdateAccountCode(address, incarnation, codeHash, code); err != nil {
 			return err
@@ -70,7 +75,8 @@ func (w *PlainStateWriter) UpdateAccountCode(address common.Address, incarnation
 	return w.db.Put(kv.PlainContractCode, dbutils.PlainGenerateStoragePrefix(address[:], incarnation), codeHash[:])
 }
 
-func (w *PlainStateWriter) DeleteAccount(address common.Address, original *accounts.Account) error {
+func (w *PlainStateWriter) DeleteAccount(address libcommon.Address, original *accounts.Account) error {
+	//fmt.Printf("delete,%x\n", address)
 	if w.csw != nil {
 		if err := w.csw.DeleteAccount(address, original); err != nil {
 			return err
@@ -79,7 +85,7 @@ func (w *PlainStateWriter) DeleteAccount(address common.Address, original *accou
 	if w.accumulator != nil {
 		w.accumulator.DeleteAccount(address)
 	}
-	if err := w.db.Delete(kv.PlainState, address[:], nil); err != nil {
+	if err := w.db.Delete(kv.PlainState, address[:]); err != nil {
 		return err
 	}
 	if original.Incarnation > 0 {
@@ -92,7 +98,8 @@ func (w *PlainStateWriter) DeleteAccount(address common.Address, original *accou
 	return nil
 }
 
-func (w *PlainStateWriter) WriteAccountStorage(address common.Address, incarnation uint64, key *common.Hash, original, value *uint256.Int) error {
+func (w *PlainStateWriter) WriteAccountStorage(address libcommon.Address, incarnation uint64, key *libcommon.Hash, original, value *uint256.Int) error {
+	//fmt.Printf("storage,%x,%x,%x\n", address, *key, value.Bytes())
 	if w.csw != nil {
 		if err := w.csw.WriteAccountStorage(address, incarnation, key, original, value); err != nil {
 			return err
@@ -108,12 +115,12 @@ func (w *PlainStateWriter) WriteAccountStorage(address common.Address, incarnati
 		w.accumulator.ChangeStorage(address, incarnation, *key, v)
 	}
 	if len(v) == 0 {
-		return w.db.Delete(kv.PlainState, compositeKey, nil)
+		return w.db.Delete(kv.PlainState, compositeKey)
 	}
 	return w.db.Put(kv.PlainState, compositeKey, v)
 }
 
-func (w *PlainStateWriter) CreateContract(address common.Address) error {
+func (w *PlainStateWriter) CreateContract(address libcommon.Address) error {
 	if w.csw != nil {
 		if err := w.csw.CreateContract(address); err != nil {
 			return err
@@ -124,6 +131,7 @@ func (w *PlainStateWriter) CreateContract(address common.Address) error {
 
 func (w *PlainStateWriter) WriteChangeSets() error {
 	if w.csw != nil {
+
 		return w.csw.WriteChangeSets()
 	}
 

@@ -19,11 +19,12 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strings"
 
+	"github.com/urfave/cli/v2"
+
 	"github.com/ledgerwatch/erigon/core/asm"
-	"github.com/urfave/cli"
 )
 
 var disasmCommand = cli.Command{
@@ -38,13 +39,13 @@ func disasmCmd(ctx *cli.Context) error {
 	switch {
 	case len(ctx.Args().First()) > 0:
 		fn := ctx.Args().First()
-		input, err := ioutil.ReadFile(fn)
+		input, err := os.ReadFile(fn)
 		if err != nil {
 			return err
 		}
 		in = string(input)
-	case ctx.GlobalIsSet(InputFlag.Name):
-		in = ctx.GlobalString(InputFlag.Name)
+	case ctx.IsSet(InputFlag.Name):
+		in = ctx.String(InputFlag.Name)
 	default:
 		return errors.New("missing filename or --input value")
 	}

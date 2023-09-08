@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 
+//go:build integration
+
 package tests
 
 import (
@@ -25,18 +27,21 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/ledgerwatch/erigon-lib/kv/memdb"
-	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon-lib/common/datadir"
 	"github.com/ledgerwatch/log/v3"
+
+	"github.com/ledgerwatch/erigon/core/state/temporal"
+	"github.com/ledgerwatch/erigon/core/vm"
+	"github.com/ledgerwatch/erigon/eth/tracers/logger"
 )
 
 func TestState(t *testing.T) {
 	defer log.Root().SetHandler(log.Root().GetHandler())
 	log.Root().SetHandler(log.LvlFilterHandler(log.LvlError, log.StderrHandler))
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		t.Skip("fix me on win please") // it's too slow on win, need generally improve speed of this tests
 	}
-	t.Parallel()
+	//t.Parallel()
 
 	st := new(testMatcher)
 
@@ -44,34 +49,24 @@ func TestState(t *testing.T) {
 	st.skipLoad(`^stTimeConsuming/`)
 	st.skipLoad(`.*vmPerformance/loop.*`)
 
-	// Broken tests:
-	st.skipLoad(`^stCreate2/create2collisionStorage.json`)
-	st.skipLoad(`^stExtCodeHash/dynamicAccountOverwriteEmpty.json`)
-	st.skipLoad(`^stSStoreTest/InitCollision.json`)
-	st.skipLoad(`^stEIP1559/typeTwoBerlin.json`)
-
-	// value exceeding 256 bit is not supported
-	st.skipLoad(`^stTransactionTest/ValueOverflow.json`)
-
 	st.walk(t, stateTestDir, func(t *testing.T, name string, test *StateTest) {
-		db := memdb.NewTestDB(t)
 		for _, subtest := range test.Subtests() {
 			subtest := subtest
 			key := fmt.Sprintf("%s/%d", subtest.Fork, subtest.Index)
 			t.Run(key, func(t *testing.T) {
+				_, db, _ := temporal.NewTestDB(t, datadir.New(t.TempDir()), nil)
 				withTrace(t, func(vmconfig vm.Config) error {
-					config, ok := Forks[subtest.Fork]
-					if !ok {
-						return UnsupportedForkError{subtest.Fork}
-					}
-					rules := config.Rules(1)
 					tx, err := db.BeginRw(context.Background())
 					if err != nil {
 						t.Fatal(err)
 					}
 					defer tx.Rollback()
-					_, err = test.Run(rules, tx, subtest, vmconfig)
+					_, err = test.Run(tx, subtest, vmconfig)
 					tx.Rollback()
+					if err != nil && len(test.json.Post[subtest.Fork][subtest.Index].ExpectException) > 0 {
+						// Ignore expected errors
+						return nil
+					}
 					return st.checkFailure(t, err)
 				})
 			})
@@ -91,7 +86,7 @@ func withTrace(t *testing.T, test func(vm.Config) error) {
 	t.Error(err)
 	buf := new(bytes.Buffer)
 	w := bufio.NewWriter(buf)
-	tracer := vm.NewJSONLogger(&vm.LogConfig{DisableMemory: true}, w)
+	tracer := logger.NewJSONLogger(&logger.LogConfig{DisableMemory: true}, w)
 	config.Debug, config.Tracer = true, tracer
 	err2 := test(config)
 	if !reflect.DeepEqual(err, err2) {

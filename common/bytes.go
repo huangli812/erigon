@@ -73,26 +73,6 @@ func Bytes2Hex(d []byte) string {
 	return hex.EncodeToString(d)
 }
 
-// Hex2Bytes returns the bytes represented by the hexadecimal string str.
-func Hex2Bytes(str string) []byte {
-	h, _ := hex.DecodeString(str)
-	return h
-}
-
-// Hex2BytesFixed returns bytes of a specified fixed length flen.
-func Hex2BytesFixed(str string, flen int) []byte {
-	h, _ := hex.DecodeString(str)
-	if len(h) == flen {
-		return h
-	}
-	if len(h) > flen {
-		return h[len(h)-flen:]
-	}
-	hh := make([]byte, flen)
-	copy(hh[flen-len(h):flen], h)
-	return hh
-}
-
 // RightPadBytes zero-pads slice to the right up to length l.
 func RightPadBytes(slice []byte, l int) []byte {
 	if l <= len(slice) {
@@ -103,6 +83,12 @@ func RightPadBytes(slice []byte, l int) []byte {
 	copy(padded, slice)
 
 	return padded
+}
+
+// Hex2Bytes returns the bytes represented by the hexadecimal string str.
+func Hex2Bytes(str string) []byte {
+	h, _ := hex.DecodeString(str)
+	return h
 }
 
 // LeftPadBytes zero-pads slice to the left up to length l.

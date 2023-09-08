@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	"github.com/ledgerwatch/erigon-lib/common/hexutility"
+
 	"github.com/ledgerwatch/erigon/common/hexutil"
 )
 
@@ -63,7 +65,7 @@ func BenchTraceCallMany(erigonURL, oeURL string, needCompare bool, blockFrom uin
 	for bn := blockFrom; bn <= blockTo; bn++ {
 		reqGen.reqID++
 		var b EthBlockByNumber
-		res = reqGen.Erigon("eth_getBlockByNumber", reqGen.getBlockByNumber(bn), &b)
+		res = reqGen.Erigon("eth_getBlockByNumber", reqGen.getBlockByNumber(bn, true /* withTxs */), &b)
 		if res.Err != nil {
 			fmt.Printf("Could not retrieve block (Erigon) %d: %v\n", bn, res.Err)
 			return
@@ -74,12 +76,12 @@ func BenchTraceCallMany(erigonURL, oeURL string, needCompare bool, blockFrom uin
 		}
 
 		n := len(b.Result.Transactions)
-		from := make([]common.Address, n)
-		to := make([]*common.Address, n)
+		from := make([]libcommon.Address, n)
+		to := make([]*libcommon.Address, n)
 		gas := make([]*hexutil.Big, n)
 		gasPrice := make([]*hexutil.Big, n)
 		value := make([]*hexutil.Big, n)
-		data := make([]hexutil.Bytes, n)
+		data := make([]hexutility.Bytes, n)
 
 		for i := 0; i < n; i++ {
 			tx := b.Result.Transactions[i]

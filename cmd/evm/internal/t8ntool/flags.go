@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/urfave/cli/v2"
+
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/tests"
-	"github.com/urfave/cli"
 )
 
 var (
@@ -83,11 +84,6 @@ var (
 		Usage: "`stdin` or file name of where to find the transactions to apply.",
 		Value: "txs.json",
 	}
-	RewardFlag = cli.Int64Flag{
-		Name:  "state.reward",
-		Usage: "Mining reward. Set to -1 to disable",
-		Value: 0,
-	}
 	ChainIDFlag = cli.Int64Flag{
 		Name:  "state.chainid",
 		Usage: "ChainID to use",
@@ -103,11 +99,11 @@ var (
 			"\n\tSyntax <forkname>(+ExtraEip)",
 			strings.Join(tests.AvailableForks(), "\n\t    "),
 			strings.Join(vm.ActivateableEips(), ", ")),
-		Value: "Istanbul",
+		Value: "Merge",
 	}
 	VerbosityFlag = cli.IntFlag{
 		Name:  "verbosity",
-		Usage: "sets the verbosity level",
+		Usage: "Deprecated. Use --log.console.verbosity, --log.dir.verbosity, --torrent.verbosity, --database.verbosity",
 		Value: 3,
 	}
 )

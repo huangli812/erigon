@@ -21,10 +21,10 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/crypto"
-	"github.com/ledgerwatch/log/v3"
 )
 
 // ErrNoChainID is returned whenever the user failed to specify a chain id.
@@ -32,29 +32,6 @@ var ErrNoChainID = errors.New("no chain id specified")
 
 // ErrNotAuthorized is returned when an account is not properly unlocked.
 var ErrNotAuthorized = errors.New("not authorized to sign this account")
-
-// NewKeyedTransactor is a utility method to easily create a transaction signer
-// from a single private key.
-//
-// Deprecated: Use NewKeyedTransactorWithChainID instead.
-func NewKeyedTransactor(key *ecdsa.PrivateKey) *TransactOpts {
-	log.Warn("WARNING: NewKeyedTransactor has been deprecated in favour of NewKeyedTransactorWithChainID")
-	keyAddr := crypto.PubkeyToAddress(key.PublicKey)
-	signer := types.LatestSignerForChainID(nil)
-	return &TransactOpts{
-		From: keyAddr,
-		Signer: func(address common.Address, tx types.Transaction) (types.Transaction, error) {
-			if address != keyAddr {
-				return nil, ErrNotAuthorized
-			}
-			signature, err := crypto.Sign(tx.SigningHash(nil).Bytes(), key)
-			if err != nil {
-				return nil, err
-			}
-			return tx.WithSignature(*signer, signature)
-		},
-	}
-}
 
 // NewKeyedTransactorWithChainID is a utility method to easily create a transaction signer
 // from a single private key.
@@ -66,7 +43,7 @@ func NewKeyedTransactorWithChainID(key *ecdsa.PrivateKey, chainID *big.Int) (*Tr
 	signer := types.LatestSignerForChainID(chainID)
 	return &TransactOpts{
 		From: keyAddr,
-		Signer: func(address common.Address, tx types.Transaction) (types.Transaction, error) {
+		Signer: func(address libcommon.Address, tx types.Transaction) (types.Transaction, error) {
 			if address != keyAddr {
 				return nil, ErrNotAuthorized
 			}

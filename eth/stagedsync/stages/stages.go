@@ -23,19 +23,22 @@ import (
 	"github.com/ledgerwatch/erigon-lib/kv"
 )
 
-// SyncStage represents the stages of syncronisation in the SyncMode.StagedSync mode
+// SyncStage represents the stages of syncronisation in the Mode.StagedSync mode
 // It is used to persist the information about the stage state into the database.
 // It should not be empty and should be unique.
 type SyncStage string
 
 var (
-	Headers             SyncStage = "Headers"             // Headers are downloaded, their Proof-Of-Work validity and chaining is verified
-	CumulativeIndex     SyncStage = "CumulativeIndex"     // Calculate how much gas has been used up to each block.
-	BlockHashes         SyncStage = "BlockHashes"         // Headers Number are written, fills blockHash => number bucket
-	Bodies              SyncStage = "Bodies"              // Block bodies are downloaded, TxHash and UncleHash are getting verified
-	Senders             SyncStage = "Senders"             // "From" recovered from signatures, bodies re-written
-	Execution           SyncStage = "Execution"           // Executing each block w/o buildinf a trie
-	Translation         SyncStage = "Translation"         // Translation each marked for translation contract (from EVM to TEVM)
+	Snapshots           SyncStage = "Snapshots"       // Snapshots
+	Headers             SyncStage = "Headers"         // Headers are downloaded, their Proof-Of-Work validity and chaining is verified
+	BorHeimdall         SyncStage = "BorHeimdall"     // Downloading data from heimdall corresponding to the downloaded headers (validator sets and sync events)
+	CumulativeIndex     SyncStage = "CumulativeIndex" // Calculate how much gas has been used up to each block.
+	BlockHashes         SyncStage = "BlockHashes"     // Headers Number are written, fills blockHash => number bucket
+	Bodies              SyncStage = "Bodies"          // Block bodies are downloaded, TxHash and UncleHash are getting verified
+	Senders             SyncStage = "Senders"         // "From" recovered from signatures, bodies re-written
+	Execution           SyncStage = "Execution"       // Executing each block w/o buildinf a trie
+	Translation         SyncStage = "Translation"     // Translation each marked for translation contract (from EVM to TEVM)
+	VerkleTrie          SyncStage = "VerkleTrie"
 	IntermediateHashes  SyncStage = "IntermediateHashes"  // Generate intermediate hashes, calculate the state root hash
 	HashState           SyncStage = "HashState"           // Apply Keccak256 to all the keys in the state
 	AccountHistoryIndex SyncStage = "AccountHistoryIndex" // Generating history index for accounts
@@ -43,16 +46,23 @@ var (
 	LogIndex            SyncStage = "LogIndex"            // Generating logs index (from receipts)
 	CallTraces          SyncStage = "CallTraces"          // Generating call traces index
 	TxLookup            SyncStage = "TxLookup"            // Generating transactions lookup index
-	Issuance            SyncStage = "WatchTheBurn"        // Compute ether issuance for each block
 	Finish              SyncStage = "Finish"              // Nominal stage after all other stages
 
 	MiningCreateBlock SyncStage = "MiningCreateBlock"
 	MiningExecution   SyncStage = "MiningExecution"
 	MiningFinish      SyncStage = "MiningFinish"
+	// Beacon chain stages
+	BeaconHistoryReconstruction SyncStage = "BeaconHistoryReconstruction" // BeaconHistoryReconstruction reconstruct missing history.
+	BeaconBlocks                SyncStage = "BeaconBlocks"                // BeaconBlocks are downloaded, no verification
+	BeaconState                 SyncStage = "BeaconState"                 // Beacon blocks are sent to the state transition function
+	BeaconIndexes               SyncStage = "BeaconIndexes"               // Fills up Beacon indexes
+
 )
 
 var AllStages = []SyncStage{
+	Snapshots,
 	Headers,
+	BorHeimdall,
 	BlockHashes,
 	Bodies,
 	Senders,

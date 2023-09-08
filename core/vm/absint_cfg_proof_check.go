@@ -2,14 +2,13 @@ package vm
 
 import (
 	"errors"
-	"github.com/holiman/uint256"
 	"log"
 	"reflect"
+
+	"github.com/holiman/uint256"
 )
 
 type CfgOpSem struct {
-	reverts  bool
-	halts    bool
 	isPush   bool
 	isDup    bool
 	isSwap   bool
@@ -31,8 +30,6 @@ func NewCfgAbsSem() *CfgAbsSem {
 			continue
 		}
 		opsem := CfgOpSem{}
-		opsem.reverts = op.reverts
-		opsem.halts = op.halts
 		opsem.isPush = op.isPush
 		opsem.isDup = op.isDup
 		opsem.isSwap = op.isSwap
@@ -86,7 +83,7 @@ func resolveCheck(sem *CfgAbsSem, code []byte, st0 *astate, pc0 int) (map[int]bo
 	succs := make(map[int]bool)
 	jumps := make(map[int]bool)
 
-	if opsem == nil || opsem.halts || opsem.reverts {
+	if opsem == nil {
 		return succs, jumps, nil
 	}
 

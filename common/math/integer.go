@@ -17,8 +17,10 @@
 package math
 
 import (
+	"crypto/rand"
 	"fmt"
-	"math/bits"
+	"math"
+	"math/big"
 	"strconv"
 )
 
@@ -43,11 +45,11 @@ type HexOrDecimal64 uint64
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (i *HexOrDecimal64) UnmarshalText(input []byte) error {
-	int, ok := ParseUint64(string(input))
+	in, ok := ParseUint64(string(input))
 	if !ok {
 		return fmt.Errorf("invalid hex or decimal integer %q", input)
 	}
-	*i = HexOrDecimal64(int)
+	*i = HexOrDecimal64(in)
 	return nil
 }
 
@@ -79,20 +81,18 @@ func MustParseUint64(s string) uint64 {
 	return v
 }
 
-// SafeSub returns x-y and checks for overflow.
-func SafeSub(x, y uint64) (uint64, bool) {
-	diff, borrowOut := bits.Sub64(x, y, 0)
-	return diff, borrowOut != 0
+// AbsoluteDifference is a utility method that given 2 int64, it returns the absolute value of their difference in uint64 format.
+func AbsoluteDifference(x, y uint64) uint64 {
+	if x > y {
+		return x - y
+	}
+	return y - x
 }
 
-// SafeAdd returns x+y and checks for overflow.
-func SafeAdd(x, y uint64) (uint64, bool) {
-	sum, carryOut := bits.Add64(x, y, 0)
-	return sum, carryOut != 0
-}
-
-// SafeMul returns x*y and checks for overflow.
-func SafeMul(x, y uint64) (uint64, bool) {
-	hi, lo := bits.Mul64(x, y)
-	return lo, hi != 0
+func RandInt64() (int64, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
+	if err != nil {
+		return 0, err
+	}
+	return n.Int64(), nil
 }

@@ -13,6 +13,7 @@
 //
 // You should have received a copy of the GNU Lesser General Public License
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
+//
 //nolint:scopelint
 package abi
 
@@ -26,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 
 	"github.com/ledgerwatch/erigon/common"
 )
@@ -75,14 +78,14 @@ func TestMethodPack(t *testing.T) {
 		t.Errorf("expected %x got %x", sig, packed)
 	}
 
-	var addrA, addrB = common.Address{1}, common.Address{2}
+	var addrA, addrB = libcommon.Address{1}, libcommon.Address{2}
 	sig = abi.Methods["sliceAddress"].ID
 	sig = append(sig, common.LeftPadBytes([]byte{32}, 32)...)
 	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
 	sig = append(sig, common.LeftPadBytes(addrA[:], 32)...)
 	sig = append(sig, common.LeftPadBytes(addrB[:], 32)...)
 
-	packed, err = abi.Pack("sliceAddress", []common.Address{addrA, addrB})
+	packed, err = abi.Pack("sliceAddress", []libcommon.Address{addrA, addrB})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +93,7 @@ func TestMethodPack(t *testing.T) {
 		t.Errorf("expected %x got %x", sig, packed)
 	}
 
-	var addrC, addrD = common.Address{3}, common.Address{4}
+	var addrC, addrD = libcommon.Address{3}, libcommon.Address{4}
 	sig = abi.Methods["sliceMultiAddress"].ID
 	sig = append(sig, common.LeftPadBytes([]byte{64}, 32)...)
 	sig = append(sig, common.LeftPadBytes([]byte{160}, 32)...)
@@ -101,7 +104,7 @@ func TestMethodPack(t *testing.T) {
 	sig = append(sig, common.LeftPadBytes(addrC[:], 32)...)
 	sig = append(sig, common.LeftPadBytes(addrD[:], 32)...)
 
-	packed, err = abi.Pack("sliceMultiAddress", []common.Address{addrA, addrB}, []common.Address{addrC, addrD})
+	packed, err = abi.Pack("sliceMultiAddress", []libcommon.Address{addrA, addrB}, []libcommon.Address{addrC, addrD})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +135,7 @@ func TestMethodPack(t *testing.T) {
 	sig = append(sig, common.LeftPadBytes([]byte{2}, 32)...)
 	sig = append(sig, common.LeftPadBytes(addrC[:], 32)...)
 	sig = append(sig, common.LeftPadBytes(addrD[:], 32)...)
-	packed, err = abi.Pack("nestedArray", a, []common.Address{addrC, addrD})
+	packed, err = abi.Pack("nestedArray", a, []libcommon.Address{addrC, addrD})
 	if err != nil {
 		t.Fatal(err)
 	}

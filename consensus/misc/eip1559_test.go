@@ -20,37 +20,21 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	"github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/params"
 )
 
 // copyConfig does a _shallow_ copy of a given config. Safe to set new values, but
 // do not use e.g. SetInt() on the numbers. For testing only
-func copyConfig(original *params.ChainConfig) *params.ChainConfig {
-	return &params.ChainConfig{
-		ChainID:             original.ChainID,
-		HomesteadBlock:      original.HomesteadBlock,
-		DAOForkBlock:        original.DAOForkBlock,
-		DAOForkSupport:      original.DAOForkSupport,
-		EIP150Block:         original.EIP150Block,
-		EIP150Hash:          original.EIP150Hash,
-		EIP155Block:         original.EIP155Block,
-		EIP158Block:         original.EIP158Block,
-		ByzantiumBlock:      original.ByzantiumBlock,
-		ConstantinopleBlock: original.ConstantinopleBlock,
-		PetersburgBlock:     original.PetersburgBlock,
-		IstanbulBlock:       original.IstanbulBlock,
-		MuirGlacierBlock:    original.MuirGlacierBlock,
-		BerlinBlock:         original.BerlinBlock,
-		LondonBlock:         original.LondonBlock,
-		ArrowGlacierBlock:   original.ArrowGlacierBlock,
-		Ethash:              original.Ethash,
-		Clique:              original.Clique,
-	}
+func copyConfig(original *chain.Config) *chain.Config {
+	copy := *original
+	return &copy
 }
 
-func config() *params.ChainConfig {
+func config() *chain.Config {
 	config := copyConfig(params.TestChainConfig)
 	config.LondonBlock = big.NewInt(5)
 	return config
@@ -96,7 +80,7 @@ func TestBlockGasLimits(t *testing.T) {
 			BaseFee:  initial,
 			Number:   big.NewInt(tc.pNum + 1),
 		}
-		err := VerifyEip1559Header(config(), parent, header)
+		err := VerifyEip1559Header(config(), parent, header, false /*skipGasLimit*/)
 		if tc.ok && err != nil {
 			t.Errorf("test %d: Expected valid header: %s", i, err)
 		}

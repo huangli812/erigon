@@ -70,7 +70,7 @@ const (
 	SHR
 	SAR
 
-	SHA3 OpCode = 0x20
+	KECCAK256 OpCode = 0x20
 )
 
 // 0x30 range - closure state.
@@ -95,15 +95,16 @@ const (
 
 // 0x40 range - block operations.
 const (
-	BLOCKHASH OpCode = 0x40 + iota
-	COINBASE
-	TIMESTAMP
-	NUMBER
-	DIFFICULTY
-	GASLIMIT
+	BLOCKHASH   OpCode = 0x40
+	COINBASE    OpCode = 0x41
+	TIMESTAMP   OpCode = 0x42
+	NUMBER      OpCode = 0x43
+	DIFFICULTY  OpCode = 0x44
+	GASLIMIT    OpCode = 0x45
 	CHAINID     OpCode = 0x46
 	SELFBALANCE OpCode = 0x47
 	BASEFEE     OpCode = 0x48
+	BLOBHASH    OpCode = 0x49
 )
 
 // 0x50 range - 'storage' and execution.
@@ -120,6 +121,10 @@ const (
 	MSIZE    OpCode = 0x59
 	GAS      OpCode = 0x5a
 	JUMPDEST OpCode = 0x5b
+	TLOAD    OpCode = 0x5c
+	TSTORE   OpCode = 0x5d
+	MCOPY    OpCode = 0x5e
+	PUSH0    OpCode = 0x5f
 )
 
 // 0x60 range.
@@ -199,13 +204,6 @@ const (
 	LOG4
 )
 
-// unofficial opcodes used for parsing.
-const (
-	PUSH OpCode = 0xb0 + iota
-	DUP
-	SWAP
-)
-
 // 0xf0 range - closures.
 const (
 	CREATE OpCode = 0xf0 + iota
@@ -216,6 +214,7 @@ const (
 	CREATE2
 	STATICCALL   OpCode = 0xfa
 	REVERT       OpCode = 0xfd
+	INVALID      OpCode = 0xfe
 	SELFDESTRUCT OpCode = 0xff
 )
 
@@ -252,7 +251,7 @@ var opCodeToString = map[OpCode]string{
 	MULMOD: "MULMOD",
 
 	// 0x20 range - crypto.
-	SHA3: "SHA3",
+	KECCAK256: "KECCAK256",
 
 	// 0x30 range - closure state.
 	ADDRESS:        "ADDRESS",
@@ -282,6 +281,7 @@ var opCodeToString = map[OpCode]string{
 	CHAINID:     "CHAINID",
 	SELFBALANCE: "SELFBALANCE",
 	BASEFEE:     "BASEFEE",
+	BLOBHASH:    "BLOBHASH",
 
 	// 0x50 range - 'storage' and execution.
 	POP: "POP",
@@ -298,6 +298,10 @@ var opCodeToString = map[OpCode]string{
 	MSIZE:    "MSIZE",
 	GAS:      "GAS",
 	JUMPDEST: "JUMPDEST",
+	TLOAD:    "TLOAD",
+	TSTORE:   "TSTORE",
+	MCOPY:    "MCOPY",
+	PUSH0:    "PUSH0",
 
 	// 0x60 range - push.
 	PUSH1:  "PUSH1",
@@ -381,11 +385,8 @@ var opCodeToString = map[OpCode]string{
 	CREATE2:      "CREATE2",
 	STATICCALL:   "STATICCALL",
 	REVERT:       "REVERT",
+	INVALID:      "INVALID",
 	SELFDESTRUCT: "SELFDESTRUCT",
-
-	PUSH: "PUSH",
-	DUP:  "DUP",
-	SWAP: "SWAP",
 }
 
 func (op OpCode) String() string {
@@ -424,7 +425,7 @@ var stringToOp = map[string]OpCode{
 	"SAR":            SAR,
 	"ADDMOD":         ADDMOD,
 	"MULMOD":         MULMOD,
-	"SHA3":           SHA3,
+	"KECCAK256":      KECCAK256,
 	"ADDRESS":        ADDRESS,
 	"BALANCE":        BALANCE,
 	"ORIGIN":         ORIGIN,
@@ -435,6 +436,7 @@ var stringToOp = map[string]OpCode{
 	"CALLDATACOPY":   CALLDATACOPY,
 	"CHAINID":        CHAINID,
 	"BASEFEE":        BASEFEE,
+	"BLOBHASH":       BLOBHASH,
 	"DELEGATECALL":   DELEGATECALL,
 	"STATICCALL":     STATICCALL,
 	"CODESIZE":       CODESIZE,
@@ -464,6 +466,10 @@ var stringToOp = map[string]OpCode{
 	"MSIZE":          MSIZE,
 	"GAS":            GAS,
 	"JUMPDEST":       JUMPDEST,
+	"TLOAD":          TLOAD,
+	"TSTORE":         TSTORE,
+	"MCOPY":          MCOPY,
+	"PUSH0":          PUSH0,
 	"PUSH1":          PUSH1,
 	"PUSH2":          PUSH2,
 	"PUSH3":          PUSH3,
@@ -539,6 +545,7 @@ var stringToOp = map[string]OpCode{
 	"RETURN":         RETURN,
 	"CALLCODE":       CALLCODE,
 	"REVERT":         REVERT,
+	"INVALID":        INVALID,
 	"SELFDESTRUCT":   SELFDESTRUCT,
 }
 

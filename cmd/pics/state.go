@@ -12,8 +12,11 @@ import (
 	"strings"
 
 	"github.com/holiman/uint256"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/memdb"
+	"github.com/ledgerwatch/log/v3"
+
 	"github.com/ledgerwatch/erigon/accounts/abi/bind"
 	"github.com/ledgerwatch/erigon/accounts/abi/bind/backends"
 	"github.com/ledgerwatch/erigon/cmd/pics/contracts"
@@ -22,10 +25,9 @@ import (
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/crypto"
 	"github.com/ledgerwatch/erigon/params"
-	"github.com/ledgerwatch/erigon/turbo/stages"
+	"github.com/ledgerwatch/erigon/turbo/stages/mock"
 	"github.com/ledgerwatch/erigon/turbo/trie"
 	"github.com/ledgerwatch/erigon/visual"
-	"github.com/ledgerwatch/log/v3"
 )
 
 /*func statePicture(t *trie.Trie, number int, keyCompression int, codeCompressed bool, valCompressed bool,
@@ -70,8 +72,8 @@ import (
 var bucketLabels = map[string]string{
 	kv.Receipts:          "Receipts",
 	kv.Log:               "Event Logs",
-	kv.AccountsHistory:   "History Of Accounts",
-	kv.StorageHistory:    "History Of Storage",
+	kv.E2AccountsHistory: "History Of Accounts",
+	kv.E2StorageHistory:  "History Of Storage",
 	kv.Headers:           "Headers",
 	kv.HeaderCanonical:   "Canonical headers",
 	kv.HeaderTD:          "Headers TD",
@@ -270,10 +272,10 @@ func initialState1() error {
 		address  = crypto.PubkeyToAddress(key.PublicKey)
 		address1 = crypto.PubkeyToAddress(key1.PublicKey)
 		address2 = crypto.PubkeyToAddress(key2.PublicKey)
-		theAddr  = common.Address{1}
-		gspec    = &core.Genesis{
-			Config: params.AllEthashProtocolChanges,
-			Alloc: core.GenesisAlloc{
+		theAddr  = libcommon.Address{1}
+		gspec    = &types.Genesis{
+			Config: params.AllProtocolChanges,
+			Alloc: types.GenesisAlloc{
 				address:  {Balance: big.NewInt(9000000000000000000)},
 				address1: {Balance: big.NewInt(200000000000000000)},
 				address2: {Balance: big.NewInt(300000000000000000)},
@@ -281,16 +283,25 @@ func initialState1() error {
 			GasLimit: 10000000,
 		}
 		// this code generates a log
-		signer = types.MakeSigner(params.AllEthashProtocolChanges, 1)
+		signer = types.MakeSigner(params.AllProtocolChanges, 1, 0)
 	)
-	m := stages.MockWithGenesis(nil, gspec, key)
+	m := mock.MockWithGenesis(nil, gspec, key, false)
 	defer m.DB.Close()
 
 	contractBackend := backends.NewSimulatedBackendWithConfig(gspec.Alloc, gspec.Config, gspec.GasLimit)
 	defer contractBackend.Close()
-	transactOpts := bind.NewKeyedTransactor(key)
-	transactOpts1 := bind.NewKeyedTransactor(key1)
-	transactOpts2 := bind.NewKeyedTransactor(key2)
+	transactOpts, err := bind.NewKeyedTransactorWithChainID(key, m.ChainConfig.ChainID)
+	if err != nil {
+		panic(err)
+	}
+	transactOpts1, err := bind.NewKeyedTransactorWithChainID(key1, m.ChainConfig.ChainID)
+	if err != nil {
+		panic(err)
+	}
+	transactOpts2, err := bind.NewKeyedTransactorWithChainID(key2, m.ChainConfig.ChainID)
+	if err != nil {
+		panic(err)
+	}
 
 	var tokenContract *contracts.Token
 	// We generate the blocks without plainstant because it's not supported in core.GenerateChain
@@ -330,7 +341,7 @@ func initialState1() error {
 		case 5:
 			// Multiple transactions sending small amounts of ether to various accounts
 			var j uint64
-			var toAddr common.Address
+			var toAddr libcommon.Address
 			nonce := block.TxNonce(address)
 			for j = 1; j <= 32; j++ {
 				binary.BigEndian.PutUint64(toAddr[:], j)
@@ -358,7 +369,7 @@ func initialState1() error {
 			txs = append(txs, tx)
 			// Multiple transactions sending small amounts of ether to various accounts
 			var j uint64
-			var toAddr common.Address
+			var toAddr libcommon.Address
 			for j = 1; j <= 32; j++ {
 				binary.BigEndian.PutUint64(toAddr[:], j)
 				tx, err = tokenContract.Transfer(transactOpts2, toAddr, big.NewInt(1))
@@ -368,7 +379,7 @@ func initialState1() error {
 				txs = append(txs, tx)
 			}
 		case 7:
-			var toAddr common.Address
+			var toAddr libcommon.Address
 			nonce := block.TxNonce(address)
 			binary.BigEndian.PutUint64(toAddr[:], 4)
 			tx, err = types.SignTx(types.NewTransaction(nonce, toAddr, uint256.NewInt(1000000000000000), 21000, new(uint256.Int), nil), *signer, key)
@@ -399,18 +410,18 @@ func initialState1() error {
 			block.AddTx(tx)
 		}
 		contractBackend.Commit()
-	}, true)
+	})
 	if err != nil {
 		return err
 	}
-	m2 := stages.MockWithGenesis(nil, gspec, key)
+	m2 := mock.MockWithGenesis(nil, gspec, key, false)
 	defer m2.DB.Close()
 
 	if err = hexPalette(); err != nil {
 		return err
 	}
 
-	emptyKv := memdb.New()
+	emptyKv := memdb.New("")
 	if err = stateDatabaseComparison(emptyKv, m.DB, 0); err != nil {
 		return err
 	}
@@ -418,14 +429,14 @@ func initialState1() error {
 
 	// BLOCKS
 
-	for i := 0; i < chain.Length; i++ {
-		if err = m2.InsertChain(chain.Slice(i, i+1)); err != nil {
+	for i := 0; i < chain.Length(); i++ {
+		if err = m2.InsertChain(chain.Slice(i, i+1), nil); err != nil {
 			return err
 		}
 		if err = stateDatabaseComparison(m.DB, m2.DB, i+1); err != nil {
 			return err
 		}
-		if err = m.InsertChain(chain.Slice(i, i+1)); err != nil {
+		if err = m.InsertChain(chain.Slice(i, i+1), nil); err != nil {
 			return err
 		}
 	}

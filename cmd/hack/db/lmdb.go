@@ -5,10 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	// "errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"os"
 	"os/exec"
@@ -212,7 +210,7 @@ type mdbx_db struct {
 	txnID     uint64 /* txnid of last committed modification */
 }
 
-//nolint // database size-related parameters, used as placeholder, doesn't have any meaning in this code
+// nolint // database size-related parameters, used as placeholder, doesn't have any meaning in this code
 type mdbx_geo struct {
 	grow_pv   uint16 //nolint
 	shrink_pv uint16 //nolint
@@ -773,13 +771,13 @@ func checkReader(tx kv.Tx, errorCh chan error) (bool, error) {
 }
 
 func defragSteps(filename string, bucketsCfg kv.TableCfg, generateFs ...func(kv.RwDB, kv.RwTx) (bool, error)) error {
-	dir, err := ioutil.TempDir(".", "db-vis")
+	dir, err := os.MkdirTemp(".", "db-vis")
 	if err != nil {
 		return fmt.Errorf("creating temp dir for db visualisation: %w", err)
 	}
 	defer os.RemoveAll(dir)
 	var db kv.RwDB
-	db, err = kv2.NewMDBX(logger).Path(dir).WithTablessCfg(func(kv.TableCfg) kv.TableCfg {
+	db, err = kv2.NewMDBX(logger).Path(dir).WithTableCfg(func(kv.TableCfg) kv.TableCfg {
 		return bucketsCfg
 	}).Open()
 	if err != nil {

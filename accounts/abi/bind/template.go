@@ -90,11 +90,13 @@ package {{.Package}}
 import (
 	"math/big"
 	"strings"
+	"fmt"
+	"reflect"
 
 	ethereum "github.com/ledgerwatch/erigon"
 	"github.com/ledgerwatch/erigon/accounts/abi"
 	"github.com/ledgerwatch/erigon/accounts/abi/bind"
-	"github.com/ledgerwatch/erigon/common"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/event"
 )
@@ -105,7 +107,7 @@ var (
 	_ = strings.NewReader
 	_ = ethereum.NotFound
 	_ = bind.Bind
-	_ = common.Big1
+	_ = libcommon.Big1
 	_ = types.BloomLookup
 	_ = event.NewSubscription
 )
@@ -136,18 +138,18 @@ var (
 		var {{.Type}}Bin = "0x{{.InputBin}}"
 
 		// Deploy{{.Type}} deploys a new Ethereum contract, binding an instance of {{.Type}} to it.
-		func Deploy{{.Type}}(auth *bind.TransactOpts, backend bind.ContractBackend {{range .Constructor.Inputs}}, {{.Name}} {{bindtype .Type $structs}}{{end}}) (common.Address, types.Transaction, *{{.Type}}, error) {
+		func Deploy{{.Type}}(auth *bind.TransactOpts, backend bind.ContractBackend {{range .Constructor.Inputs}}, {{.Name}} {{bindtype .Type $structs}}{{end}}) (libcommon.Address, types.Transaction, *{{.Type}}, error) {
 		  parsed, err := abi.JSON(strings.NewReader({{.Type}}ABI))
 		  if err != nil {
-		    return common.Address{}, nil, nil, err
+		    return libcommon.Address{}, nil, nil, err
 		  }
 		  {{range $pattern, $name := .Libraries}}
 			{{decapitalise $name}}Addr, _, _, _ := Deploy{{capitalise $name}}(auth, backend)
 			{{$contract.Type}}Bin = strings.Replace({{$contract.Type}}Bin, "__${{$pattern}}$__", {{decapitalise $name}}Addr.String()[2:], -1)
 		  {{end}}
-		  address, tx, contract, err := bind.DeployContract(auth, parsed, common.FromHex({{.Type}}Bin), backend {{range .Constructor.Inputs}}, {{.Name}}{{end}})
+		  address, tx, contract, err := bind.DeployContract(auth, parsed, libcommon.FromHex({{.Type}}Bin), backend {{range .Constructor.Inputs}}, {{.Name}}{{end}})
 		  if err != nil {
-		    return common.Address{}, nil, nil, err
+		    return libcommon.Address{}, nil, nil, err
 		  }
 		  return address, tx, &{{.Type}}{ {{.Type}}Caller: {{.Type}}Caller{contract: contract}, {{.Type}}Transactor: {{.Type}}Transactor{contract: contract}, {{.Type}}Filterer: {{.Type}}Filterer{contract: contract} }, nil
 		}
@@ -213,7 +215,7 @@ var (
 	}
 
 	// New{{.Type}} creates a new instance of {{.Type}}, bound to a specific deployed contract.
-	func New{{.Type}}(address common.Address, backend bind.ContractBackend) (*{{.Type}}, error) {
+	func New{{.Type}}(address libcommon.Address, backend bind.ContractBackend) (*{{.Type}}, error) {
 	  contract, err := bind{{.Type}}(address, backend, backend, backend)
 	  if err != nil {
 	    return nil, err
@@ -222,7 +224,7 @@ var (
 	}
 
 	// New{{.Type}}Caller creates a new read-only instance of {{.Type}}, bound to a specific deployed contract.
-	func New{{.Type}}Caller(address common.Address, caller bind.ContractCaller) (*{{.Type}}Caller, error) {
+	func New{{.Type}}Caller(address libcommon.Address, caller bind.ContractCaller) (*{{.Type}}Caller, error) {
 	  contract, err := bind{{.Type}}(address, caller, nil, nil)
 	  if err != nil {
 	    return nil, err
@@ -231,7 +233,7 @@ var (
 	}
 
 	// New{{.Type}}Transactor creates a new write-only instance of {{.Type}}, bound to a specific deployed contract.
-	func New{{.Type}}Transactor(address common.Address, transactor bind.ContractTransactor) (*{{.Type}}Transactor, error) {
+	func New{{.Type}}Transactor(address libcommon.Address, transactor bind.ContractTransactor) (*{{.Type}}Transactor, error) {
 	  contract, err := bind{{.Type}}(address, nil, transactor, nil)
 	  if err != nil {
 	    return nil, err
@@ -240,7 +242,7 @@ var (
 	}
 
 	// New{{.Type}}Filterer creates a new log filterer instance of {{.Type}}, bound to a specific deployed contract.
- 	func New{{.Type}}Filterer(address common.Address, filterer bind.ContractFilterer) (*{{.Type}}Filterer, error) {
+ 	func New{{.Type}}Filterer(address libcommon.Address, filterer bind.ContractFilterer) (*{{.Type}}Filterer, error) {
  	  contract, err := bind{{.Type}}(address, nil, nil, filterer)
  	  if err != nil {
  	    return nil, err
@@ -249,7 +251,7 @@ var (
  	}
 
 	// bind{{.Type}} binds a generic wrapper to an already deployed contract.
-	func bind{{.Type}}(address common.Address, caller bind.ContractCaller, transactor bind.ContractTransactor, filterer bind.ContractFilterer) (*bind.BoundContract, error) {
+	func bind{{.Type}}(address libcommon.Address, caller bind.ContractCaller, transactor bind.ContractTransactor, filterer bind.ContractFilterer) (*bind.BoundContract, error) {
 	  parsed, err := abi.JSON(strings.NewReader({{.Type}}ABI))
 	  if err != nil {
 	    return nil, err
@@ -335,7 +337,7 @@ var (
 		func (_{{$contract.Type}} *{{$contract.Type}}CallerSession) {{.Normalized.Name}}({{range $i, $_ := .Normalized.Inputs}}{{if ne $i 0}},{{end}} {{.Name}} {{bindtype .Type $structs}} {{end}}) ({{if .Structured}}struct{ {{range .Normalized.Outputs}}{{.Name}} {{bindtype .Type $structs}};{{end}} }, {{else}} {{range .Normalized.Outputs}}{{bindtype .Type $structs}},{{end}} {{end}} error) {
 		  return _{{$contract.Type}}.Contract.{{.Normalized.Name}}(&_{{$contract.Type}}.CallOpts {{range .Normalized.Inputs}}, {{.Name}}{{end}})
 		}
-	{{end}}
+	{{end}}  
 
 	{{range .Transacts}}
 		// {{.Normalized.Name}} is a paid mutator transaction binding the contract method 0x{{printf "%x" .Original.ID}}.
@@ -358,6 +360,52 @@ var (
 		func (_{{$contract.Type}} *{{$contract.Type}}TransactorSession) {{.Normalized.Name}}({{range $i, $_ := .Normalized.Inputs}}{{if ne $i 0}},{{end}} {{.Name}} {{bindtype .Type $structs}} {{end}}) (types.Transaction, error) {
 		  return _{{$contract.Type}}.Contract.{{.Normalized.Name}}(&_{{$contract.Type}}.TransactOpts {{range $i, $_ := .Normalized.Inputs}}, {{.Name}}{{end}})
 		}
+	{{end}}
+
+	{{$metaType := .Type}}
+	{{range .Transacts}}
+		{{if ne (len .Normalized.Inputs) 0}}
+
+		// {{.Normalized.Name}}Params is an auto generated read-only Go binding of transcaction calldata params
+		type {{.Normalized.Name}}Params struct {
+			{{range $i, $_ := .Normalized.Inputs}} Param_{{.Name}} {{bindtype .Type $structs}}
+			{{end}}
+		}
+
+		// Parse {{.Normalized.Name}} method from calldata of a transaction
+		// 
+		// Solidity: {{.Original.String}}
+		func Parse{{.Normalized.Name}}(calldata []byte) (*{{.Normalized.Name}}Params, error) {
+			if len(calldata) <= 4 {
+				return nil, fmt.Errorf("invalid calldata input")
+			}
+
+			_abi, err := abi.JSON(strings.NewReader({{$metaType}}ABI))
+			if err != nil {
+				return nil, fmt.Errorf("failed to get abi of registry metadata: %w", err)
+			}
+
+			out, err := _abi.Methods["{{.Original.Name}}"].Inputs.Unpack(calldata[4:])
+			if err != nil {
+				return nil, fmt.Errorf("failed to unpack {{.Original.Name}} params data: %w", err)
+			}		
+
+			var paramsResult = new({{.Normalized.Name}}Params)
+			value := reflect.ValueOf(paramsResult).Elem()
+
+			if value.NumField() != len(out) {
+				return nil, fmt.Errorf("failed to match calldata with param field number")
+			}
+		
+			{{range $i, $t := .Normalized.Inputs}}
+			out{{$i}} := *abi.ConvertType(out[{{$i}}], new({{bindtype .Type $structs}})).(*{{bindtype .Type $structs}}){{end}}
+
+			return &{{.Normalized.Name}}Params{
+				{{range $i, $_ := .Normalized.Inputs}} Param_{{.Name}} : out{{$i}},{{end}} 
+			}, nil 
+		}
+
+		{{end}}
 	{{end}}
 
 	{{if .Fallback}} 

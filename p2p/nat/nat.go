@@ -55,38 +55,50 @@ type Interface interface {
 // The following formats are currently accepted.
 // Note that mechanism names are not case-sensitive.
 //
-//     "" or "none"         return nil
-//     "extip:77.12.33.4"   will assume the local machine is reachable on the given IP
-//     "any"                uses the first auto-detected mechanism
-//     "upnp"               uses the Universal Plug and Play protocol
-//     "pmp"                uses NAT-PMP with an auto-detected gateway address
-//     "pmp:192.168.0.1"    uses NAT-PMP with the given gateway address
+//	"" or "none"         return nil
+//	"extip:77.12.33.4"   will assume the local machine is reachable on the given IP
+//	"any"                uses the first auto-detected mechanism
+//	"upnp"               uses the Universal Plug and Play protocol
+//	"pmp"                uses NAT-PMP with an auto-detected gateway address
+//	"pmp:192.168.0.1"    uses NAT-PMP with the given gateway address
+//	"stun"               uses STUN to detect an external IP using a default server
+//	"stun:<server>"      uses STUN to detect an external IP using the given server (host:port)
 func Parse(spec string) (Interface, error) {
 	var (
 		parts = strings.SplitN(spec, ":", 2)
 		mech  = strings.ToLower(parts[0])
-		ip    net.IP
 	)
-	if len(parts) > 1 {
-		ip = net.ParseIP(parts[1])
-		if ip == nil {
-			return nil, errors.New("invalid IP address")
-		}
-	}
 	switch mech {
 	case "", "none", "off":
 		return nil, nil
 	case "any", "auto", "on":
 		return Any(), nil
 	case "extip", "ip":
-		if ip == nil {
+		if len(parts) < 2 {
 			return nil, errors.New("missing IP address")
+		}
+		ip := net.ParseIP(parts[1])
+		if ip == nil {
+			return nil, errors.New("invalid IP address")
 		}
 		return ExtIP(ip), nil
 	case "upnp":
 		return UPnP(), nil
 	case "pmp", "natpmp", "nat-pmp":
+		var ip net.IP
+		if len(parts) > 1 {
+			ip = net.ParseIP(parts[1])
+			if ip == nil {
+				return nil, errors.New("invalid IP address")
+			}
+		}
 		return PMP(ip), nil
+	case "stun":
+		var addr string
+		if len(parts) > 1 {
+			addr = parts[1]
+		}
+		return NewSTUN(addr), nil
 	default:
 		return nil, fmt.Errorf("unknown mechanism %q", parts[0])
 	}
@@ -98,22 +110,22 @@ const (
 
 // Map adds a port mapping on m and keeps it alive until c is closed.
 // This function is typically invoked in its own goroutine.
-func Map(m Interface, c <-chan struct{}, protocol string, extport, intport int, name string) {
+func Map(m Interface, c <-chan struct{}, protocol string, extport, intport int, name string, logger log.Logger) {
 	if !m.SupportsMapping() {
 		panic("Port mapping is not supported")
 	}
 
-	logger := log.New("proto", protocol, "extport", extport, "intport", intport, "interface", m)
+	logger1 := logger.New("proto", protocol, "extport", extport, "intport", intport, "interface", m)
 	refresh := time.NewTimer(mapTimeout)
 	defer func() {
 		refresh.Stop()
-		logger.Trace("Deleting port mapping")
+		logger1.Trace("Deleting port mapping")
 		m.DeleteMapping(protocol, extport, intport)
 	}()
 	if err := m.AddMapping(protocol, extport, intport, name, mapTimeout); err != nil {
-		logger.Debug("Couldn't add port mapping", "err", err)
+		logger1.Debug("Couldn't add port mapping", "err", err)
 	} else {
-		logger.Info("Mapped network port")
+		logger1.Info("Mapped network port")
 	}
 	for {
 		select {
@@ -122,9 +134,9 @@ func Map(m Interface, c <-chan struct{}, protocol string, extport, intport int, 
 				return
 			}
 		case <-refresh.C:
-			logger.Trace("Refreshing port mapping")
+			logger1.Trace("Refreshing port mapping")
 			if err := m.AddMapping(protocol, extport, intport, name, mapTimeout); err != nil {
-				logger.Debug("Couldn't add port mapping", "err", err)
+				logger1.Debug("Couldn't add port mapping", "err", err)
 			}
 			refresh.Reset(mapTimeout)
 		}

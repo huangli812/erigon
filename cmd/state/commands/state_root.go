@@ -6,23 +6,30 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"syscall"
 
+	chain2 "github.com/ledgerwatch/erigon-lib/chain"
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+	datadir2 "github.com/ledgerwatch/erigon-lib/common/datadir"
 	"github.com/ledgerwatch/erigon-lib/kv"
+	"github.com/ledgerwatch/erigon-lib/kv/kvcfg"
 	kv2 "github.com/ledgerwatch/erigon-lib/kv/mdbx"
-	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/core"
-	"github.com/ledgerwatch/erigon/core/rawdb"
+	"github.com/ledgerwatch/erigon/core/rawdb/blockio"
+	"github.com/ledgerwatch/erigon/eth/ethconfig"
+	"github.com/ledgerwatch/erigon/turbo/services"
+	"github.com/ledgerwatch/erigon/turbo/snapshotsync/freezeblocks"
+	"github.com/ledgerwatch/log/v3"
+	"github.com/spf13/cobra"
+
+	"github.com/ledgerwatch/erigon/consensus/ethash"
 	"github.com/ledgerwatch/erigon/core/state"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/core/vm"
 	"github.com/ledgerwatch/erigon/eth/stagedsync"
-	"github.com/ledgerwatch/erigon/params"
+	"github.com/ledgerwatch/erigon/turbo/debug"
 	"github.com/ledgerwatch/erigon/turbo/trie"
-	"github.com/ledgerwatch/log/v3"
-	"github.com/spf13/cobra"
 )
 
 func init() {
@@ -35,12 +42,25 @@ var stateRootCmd = &cobra.Command{
 	Use:   "stateroot",
 	Short: "Exerimental command to re-execute blocks from beginning and compute state root",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		logger := log.New()
-		return StateRoot(genesis, logger, block, datadir)
+		logger := debug.SetupCobra(cmd, "stateroot")
+		return StateRoot(genesis, block, datadirCli, logger)
 	},
 }
 
-func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadir string) error {
+func blocksIO(db kv.RoDB) (services.FullBlockReader, *blockio.BlockWriter) {
+	var histV3 bool
+	if err := db.View(context.Background(), func(tx kv.Tx) error {
+		histV3, _ = kvcfg.HistoryV3.Enabled(tx)
+		return nil
+	}); err != nil {
+		panic(err)
+	}
+	br := freezeblocks.NewBlockReader(freezeblocks.NewRoSnapshots(ethconfig.BlocksFreezing{Enabled: false}, "", log.New()), nil /* BorSnapshots */)
+	bw := blockio.NewBlockWriter(histV3)
+	return br, bw
+}
+
+func StateRoot(genesis *types.Genesis, blockNum uint64, datadir string, logger log.Logger) error {
 	sigs := make(chan os.Signal, 1)
 	interruptCh := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -49,7 +69,8 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 		<-sigs
 		interruptCh <- true
 	}()
-	historyDb, err := kv2.NewMDBX(logger).Path(path.Join(datadir, "chaindata")).Open()
+	dirs := datadir2.New(datadir)
+	historyDb, err := kv2.NewMDBX(logger).Path(dirs.Chaindata).Open()
 	if err != nil {
 		return err
 	}
@@ -73,6 +94,8 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 		return err2
 	}
 	defer db.Close()
+	blockReader, _ := blocksIO(db)
+
 	chainConfig := genesis.Config
 	vmConfig := vm.Config{}
 
@@ -86,12 +109,12 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 	if rwTx, err = db.BeginRw(ctx); err != nil {
 		return err
 	}
-	_, genesisIbs, err4 := genesis.ToBlock()
+	_, genesisIbs, err4 := core.GenesisToBlock(genesis, "")
 	if err4 != nil {
 		return err4
 	}
 	w := state.NewPlainStateWriter(rwTx, nil, 0)
-	if err = genesisIbs.CommitBlock(params.Rules{}, w); err != nil {
+	if err = genesisIbs.CommitBlock(&chain2.Rules{}, w); err != nil {
 		return fmt.Errorf("cannot write state: %w", err)
 	}
 	if err = rwTx.Commit(); err != nil {
@@ -108,12 +131,8 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 		if block >= blockNum {
 			break
 		}
-		blockHash, err := rawdb.ReadCanonicalHash(historyTx, block)
-		if err != nil {
-			return err
-		}
 		var b *types.Block
-		b, _, err = rawdb.ReadBlockWithSenders(historyTx, blockHash, block)
+		b, err = blockReader.BlockByNumber(ctx, historyTx, block)
 		if err != nil {
 			return err
 		}
@@ -129,8 +148,11 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 		w = state.NewPlainStateWriter(rwTx, nil, block)
 		r := state.NewPlainStateReader(tx)
 		intraBlockState := state.New(r)
-		getHeader := func(hash common.Hash, number uint64) *types.Header { return rawdb.ReadHeader(historyTx, hash, number) }
-		if _, err = runBlock(intraBlockState, noOpWriter, w, chainConfig, getHeader, nil, b, vmConfig); err != nil {
+		getHeader := func(hash libcommon.Hash, number uint64) *types.Header {
+			h, _ := blockReader.Header(ctx, historyTx, hash, number)
+			return h
+		}
+		if _, err = runBlock(ethash.NewFullFaker(), intraBlockState, noOpWriter, w, chainConfig, getHeader, b, vmConfig, false, logger); err != nil {
 			return fmt.Errorf("block %d: %w", block, err)
 		}
 		if block+1 == blockNum {
@@ -140,10 +162,10 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 			if err = rwTx.ClearBucket(kv.HashedStorage); err != nil {
 				return err
 			}
-			if err = stagedsync.PromoteHashedStateCleanly("hashedstate", rwTx, stagedsync.StageHashStateCfg(nil, stateDbPath), make(chan struct{})); err != nil {
+			if err = stagedsync.PromoteHashedStateCleanly("hashedstate", rwTx, stagedsync.StageHashStateCfg(nil, dirs, false), ctx, logger); err != nil {
 				return err
 			}
-			var root common.Hash
+			var root libcommon.Hash
 			root, err = trie.CalcRoot("genesis", rwTx)
 			if err != nil {
 				return err
@@ -151,7 +173,7 @@ func StateRoot(genesis *core.Genesis, logger log.Logger, blockNum uint64, datadi
 			fmt.Printf("root for block %d=[%x]\n", block, root)
 		}
 		if block%1000 == 0 {
-			log.Info("Processed", "blocks", block)
+			logger.Info("Processed", "blocks", block)
 		}
 		// Check for interrupts
 		select {

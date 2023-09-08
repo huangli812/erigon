@@ -27,13 +27,15 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ledgerwatch/erigon-lib/common/length"
 	"golang.org/x/crypto/sha3"
+
+	"github.com/ledgerwatch/log/v3"
 
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/bitutil"
 	"github.com/ledgerwatch/erigon/common/debug"
 	"github.com/ledgerwatch/erigon/crypto"
-	"github.com/ledgerwatch/log/v3"
 )
 
 const (
@@ -114,8 +116,14 @@ func makeHasher(h hash.Hash) hasher {
 	outputLen := rh.Size()
 	return func(dest []byte, data []byte) {
 		rh.Reset()
-		rh.Write(data)
-		rh.Read(dest[:outputLen])
+		_, writeErr := rh.Write(data)
+		if writeErr != nil {
+			log.Warn("Failed to write data", "err", writeErr)
+		}
+		_, readErr := rh.Read(dest[:outputLen])
+		if readErr != nil {
+			log.Warn("Failed to read data", "err", readErr)
+		}
 	}
 }
 
@@ -132,9 +140,15 @@ func seedHash(block uint64) []byte {
 	for i := 0; i < int(block/epochLength); i++ {
 		h.Sha.Reset()
 		//nolint:errcheck
-		h.Sha.Write(seed)
+		_, writeErr := h.Sha.Write(seed)
+		if writeErr != nil {
+			log.Warn("Failed to write data", "err", writeErr)
+		}
 		//nolint:errcheck
-		h.Sha.Read(seed)
+		_, readErr := h.Sha.Read(seed)
+		if readErr != nil {
+			log.Warn("Failed to read data", "err", readErr)
+		}
 	}
 
 	common.ReturnHasherToPool(h)
@@ -343,7 +357,7 @@ func generateDataset(dest []uint32, epoch uint64, cache []uint32) {
 	datasetHdr.Cap = destHdr.Cap * 4
 
 	// Generate the dataset on many goroutines since it takes a while
-	threads := runtime.NumCPU()
+	threads := runtime.GOMAXPROCS(-1)
 	size := uint64(len(dataset))
 
 	var pend sync.WaitGroup
@@ -423,7 +437,7 @@ func hashimoto(hash []byte, nonce uint64, size uint64, lookup func(index uint32)
 	}
 	mix = mix[:len(mix)/4]
 
-	digest := make([]byte, common.HashLength)
+	digest := make([]byte, length.Hash)
 	for i, val := range mix {
 		binary.LittleEndian.PutUint32(digest[i*4:], val)
 	}

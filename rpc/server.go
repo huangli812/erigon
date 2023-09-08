@@ -18,10 +18,12 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync/atomic"
 
 	mapset "github.com/deckarep/golang-set"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/ledgerwatch/log/v3"
 )
 
@@ -46,14 +48,19 @@ type Server struct {
 	methodAllowList AllowList
 	idgen           func() ID
 	run             int32
-	codecs          mapset.Set
+	codecs          mapset.Set // mapset.Set[ServerCodec] requires go 1.20
 
 	batchConcurrency uint
+	disableStreaming bool
+	traceRequests    bool // Whether to print requests at INFO level
+	batchLimit       int  // Maximum number of requests in a batch
+	logger           log.Logger
 }
 
 // NewServer creates a new server instance with no registered handlers.
-func NewServer(batchConcurrency uint) *Server {
-	server := &Server{idgen: randomIDGenerator(), codecs: mapset.NewSet(), run: 1, batchConcurrency: batchConcurrency}
+func NewServer(batchConcurrency uint, traceRequests, disableStreaming bool, logger log.Logger) *Server {
+	server := &Server{services: serviceRegistry{logger: logger}, idgen: randomIDGenerator(), codecs: mapset.NewSet(), run: 1, batchConcurrency: batchConcurrency,
+		disableStreaming: disableStreaming, traceRequests: traceRequests, logger: logger}
 	// Register the default service providing meta information about the RPC service such
 	// as the services and methods it offers.
 	rpcService := &RPCService{server: server}
@@ -64,6 +71,11 @@ func NewServer(batchConcurrency uint) *Server {
 // SetAllowList sets the allow list for methods that are handled by this server
 func (s *Server) SetAllowList(allowList AllowList) {
 	s.methodAllowList = allowList
+}
+
+// SetBatchLimit sets limit of number of requests in a batch
+func (s *Server) SetBatchLimit(limit int) {
+	s.batchLimit = limit
 }
 
 // RegisterName creates a service for the given receiver type under the given name. When no
@@ -91,7 +103,7 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 	s.codecs.Add(codec)
 	defer s.codecs.Remove(codec)
 
-	c := initClient(codec, s.idgen, &s.services)
+	c := initClient(codec, s.idgen, &s.services, s.logger)
 	<-codec.closed()
 	c.Close()
 }
@@ -99,13 +111,13 @@ func (s *Server) ServeCodec(codec ServerCodec, options CodecOption) {
 // serveSingleRequest reads and processes a single RPC request from the given codec. This
 // is used to serve HTTP connections. Subscriptions and reverse calls are not allowed in
 // this mode.
-func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
+func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec, stream *jsoniter.Stream) {
 	// Don't serve if server is stopped.
 	if atomic.LoadInt32(&s.run) == 0 {
 		return
 	}
 
-	h := newHandler(ctx, codec, s.idgen, &s.services, s.methodAllowList, s.batchConcurrency)
+	h := newHandler(ctx, codec, s.idgen, &s.services, s.methodAllowList, s.batchConcurrency, s.traceRequests, s.logger)
 	h.allowSubscribe = false
 	defer h.close(io.EOF, nil)
 
@@ -117,9 +129,13 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 		return
 	}
 	if batch {
-		h.handleBatch(reqs)
+		if s.batchLimit > 0 && len(reqs) > s.batchLimit {
+			codec.writeJSON(ctx, errorMessage(fmt.Errorf("batch limit %d exceeded (can increase by --rpc.batch.limit). Requested batch of size: %d", s.batchLimit, len(reqs))))
+		} else {
+			h.handleBatch(reqs)
+		}
 	} else {
-		h.handleMsg(reqs[0])
+		h.handleMsg(reqs[0], stream)
 	}
 }
 
@@ -128,7 +144,7 @@ func (s *Server) serveSingleRequest(ctx context.Context, codec ServerCodec) {
 // subscriptions.
 func (s *Server) Stop() {
 	if atomic.CompareAndSwapInt32(&s.run, 1, 0) {
-		log.Info("RPC server shutting down")
+		s.logger.Info("RPC server shutting down")
 		s.codecs.Each(func(c interface{}) bool {
 			c.(ServerCodec).close()
 			return true

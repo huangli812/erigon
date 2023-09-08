@@ -91,8 +91,9 @@ func checkNodes(t *testing.T, nodes []*Node, wantLen int) {
 
 // This test checks fairness of FairMix in the happy case where all sources return nodes
 // within the context's deadline.
-func TestFairMix(t *testing.T) {
-	for i := 0; i < 500; i++ {
+// see: iter_integration_test.go
+func TestFairMixOnce(t *testing.T) {
+	for i := 0; i < 10; i++ {
 		testMixerFairness(t)
 	}
 }
@@ -239,11 +240,11 @@ func idPrefixDistribution(nodes []*Node) map[uint32]int {
 	return d
 }
 
-func approxEqual(x, y, ε int) bool {
+func approxEqual(x, y, epsilon int) bool {
 	if y > x {
 		x, y = y, x
 	}
-	return x-y > ε
+	return x-y > epsilon
 }
 
 // genIter creates fake nodes with numbered IDs based on 'index' and 'gen'

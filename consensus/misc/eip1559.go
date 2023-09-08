@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/ledgerwatch/erigon/common"
+	"github.com/ledgerwatch/erigon-lib/chain"
+	"github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/common/math"
 	"github.com/ledgerwatch/erigon/core/types"
 	"github.com/ledgerwatch/erigon/params"
@@ -29,14 +31,16 @@ import (
 // VerifyEip1559Header verifies some header attributes which were changed in EIP-1559,
 // - gas limit check
 // - basefee check
-func VerifyEip1559Header(config *params.ChainConfig, parent, header *types.Header) error {
-	// Verify that the gas limit remains within allowed bounds
-	parentGasLimit := parent.GasLimit
-	if !config.IsLondon(parent.Number.Uint64()) {
-		parentGasLimit = parent.GasLimit * params.ElasticityMultiplier
-	}
-	if err := VerifyGaslimit(parentGasLimit, header.GasLimit); err != nil {
-		return err
+func VerifyEip1559Header(config *chain.Config, parent, header *types.Header, skipGasLimit bool) error {
+	if !skipGasLimit {
+		// Verify that the gas limit remains within allowed bounds
+		parentGasLimit := parent.GasLimit
+		if !config.IsLondon(parent.Number.Uint64()) {
+			parentGasLimit = parent.GasLimit * params.ElasticityMultiplier
+		}
+		if err := VerifyGaslimit(parentGasLimit, header.GasLimit); err != nil {
+			return err
+		}
 	}
 	// Verify the header is not malformed
 	if header.BaseFee == nil {
@@ -52,7 +56,7 @@ func VerifyEip1559Header(config *params.ChainConfig, parent, header *types.Heade
 }
 
 // CalcBaseFee calculates the basefee of the header.
-func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
+func CalcBaseFee(config *chain.Config, parent *types.Header) *big.Int {
 	// If the current block is the first EIP-1559 block, return the InitialBaseFee.
 	if !config.IsLondon(parent.Number.Uint64()) {
 		return new(big.Int).SetUint64(params.InitialBaseFee)
@@ -61,7 +65,7 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
 	var (
 		parentGasTarget          = parent.GasLimit / params.ElasticityMultiplier
 		parentGasTargetBig       = new(big.Int).SetUint64(parentGasTarget)
-		baseFeeChangeDenominator = new(big.Int).SetUint64(params.BaseFeeChangeDenominator)
+		baseFeeChangeDenominator = new(big.Int).SetUint64(getBaseFeeChangeDenominator(config.Bor, parent.Number.Uint64()))
 	)
 	// If the parent gasUsed is the same as the target, the baseFee remains unchanged.
 	if parent.GasUsed == parentGasTarget {
@@ -90,4 +94,14 @@ func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
 			common.Big0,
 		)
 	}
+}
+
+func getBaseFeeChangeDenominator(borConfig *chain.BorConfig, number uint64) uint64 {
+	// If we're running bor based chain post delhi hardfork, return the new value
+	if borConfig != nil && borConfig.IsDelhi(number) {
+		return params.BaseFeeChangeDenominatorPostDelhi
+	}
+
+	// Return the original once for other chains and pre-fork cases
+	return params.BaseFeeChangeDenominator
 }

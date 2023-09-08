@@ -3,6 +3,8 @@ package trie
 import (
 	"fmt"
 
+	libcommon "github.com/ledgerwatch/erigon-lib/common"
+
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/rlp"
 )
@@ -29,7 +31,7 @@ func FullNode2() {
 func FullNode3() {
 	f := &fullNode{}
 	f.Children[0] = valueNode(nil)
-	h := common.Hash{}
+	h := libcommon.Hash{}
 	f.Children[1] = hashNode{hash: h[:]}
 	b, err := rlp.EncodeToBytes(f)
 	if err != nil {
@@ -40,7 +42,7 @@ func FullNode3() {
 
 func FullNode4() {
 	f := &fullNode{}
-	h := common.Hash{}
+	h := libcommon.Hash{}
 	for i := 0; i < 17; i++ {
 		f.Children[i] = hashNode{hash: h[:]}
 	}
@@ -52,7 +54,7 @@ func FullNode4() {
 }
 
 func ShortNode1() {
-	s := NewShortNode([]byte("1"), valueNode([]byte("2")))
+	s := NewShortNode([]byte("1"), valueNode("2"))
 	b, err := rlp.EncodeToBytes(s)
 	if err != nil {
 		panic(err)
@@ -61,7 +63,7 @@ func ShortNode1() {
 }
 
 func ShortNode2() {
-	s := NewShortNode([]byte("1"), valueNode([]byte("123456789012345678901234567890123456789012345678901234567890")))
+	s := NewShortNode([]byte("1"), valueNode("123456789012345678901234567890123456789012345678901234567890"))
 	b, err := rlp.EncodeToBytes(s)
 	if err != nil {
 		panic(err)
@@ -74,7 +76,7 @@ func hashRoot(n node, title string) {
 	h1 := newHasher(true)
 	defer returnHasherToPool(h)
 	defer returnHasherToPool(h1)
-	var hash common.Hash
+	var hash libcommon.Hash
 	hLen, _ := h.hash(n, true, hash[:])
 	if hLen < 32 {
 		panic("expected hashNode")
@@ -99,17 +101,17 @@ func Hash2() {
 }
 
 func Hash3() {
-	s := NewShortNode([]byte("12"), valueNode([]byte("1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012")))
+	s := NewShortNode([]byte("12"), valueNode("1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012"))
 	hashRoot(s, "Hash3")
 }
 
 func Hash4() {
-	s := NewShortNode([]byte("12345678901234567890123456789012"), valueNode([]byte("12345678901234567890")))
+	s := NewShortNode([]byte("12345678901234567890123456789012"), valueNode("12345678901234567890"))
 	hashRoot(s, "Hash4")
 }
 
 func Hash5() {
-	s := NewShortNode([]byte("1234567890123456789012345678901"), valueNode([]byte("1")))
+	s := NewShortNode([]byte("1234567890123456789012345678901"), valueNode("1"))
 	hashRoot(s, "Hash5")
 }
 

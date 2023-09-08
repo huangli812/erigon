@@ -22,12 +22,6 @@ import (
 	"io"
 	"os"
 	"runtime"
-
-	"github.com/spf13/cobra"
-	"github.com/urfave/cli"
-
-	"github.com/ledgerwatch/erigon/internal/debug"
-	"github.com/ledgerwatch/erigon/node"
 )
 
 // Fatalf formats a message to standard error and exits the program.
@@ -48,24 +42,4 @@ func Fatalf(format string, args ...interface{}) {
 	}
 	fmt.Fprintf(w, "Fatal: "+format+"\n", args...)
 	os.Exit(1)
-}
-
-func StartNode(stack *node.Node) {
-	if err := stack.Start(); err != nil {
-		Fatalf("Error starting protocol stack: %v", err)
-	}
-
-	go debug.ListenSignals(stack)
-}
-
-func SetupCobra(cmd *cobra.Command) error {
-	return debug.SetupCobra(cmd)
-}
-
-func StopDebug() {
-	debug.Exit()
-}
-
-func SetupUrfave(ctx *cli.Context) error {
-	return debug.Setup(ctx)
 }
